@@ -148,4 +148,26 @@ if uploaded_file:
             st.plotly_chart(px.imshow(df_final[sol_cols].corr(), text_auto=True, color_continuous_scale="RdBu_r"), use_container_width=True)
 
     except Exception as e:
-        st.error(f"Erreur système : {e}")
+        st.error(f"Erreur système : {e}")with tab_stats_expert:
+    st.header("🔬 Analyse Multivariée (Système Expert)")
+    
+    # 1. Analyse par Potentiel (Anova simplifiée)
+    st.subheader("1. Réponse par zone de Potentiel")
+    for pot in df_final['potentiel'].unique():
+        sub = df_final[df_final['potentiel'] == pot]
+        d_p_loc = sub[sub['grp'] == 'Produit']['rdt']
+        d_t_loc = sub[sub['grp'] == 'Témoin']['rdt']
+        
+        if len(d_p_loc) > 5 and len(d_t_loc) > 5:
+            gain_loc = d_p_loc.mean() - d_t_loc.mean()
+            _, p_loc = stats.ttest_ind(d_p_loc, d_t_loc)
+            st.write(f"Zone **{pot}** : Gain = **{round(gain_loc,2)} qtx** (p-value: `{round(p_loc,4)}`) {'✅' if p_loc < 0.05 else '❌'}")
+
+    # 2. Corrélation Multiple
+    st.subheader("2. Poids des facteurs (Corrélation)")
+    # On regarde quel élément du sol "pilote" le rendement
+    cols_check = [c for c in ['rdt', 'ph', 'mg', 'k', 'p', 'ca'] if c in df_final.columns]
+    if len(cols_check) > 2:
+        corr_matrix = df_final[cols_check].corr()['rdt'].sort_values(ascending=False)
+        st.write("Classement des facteurs influençant le rendement :")
+        st.dataframe(corr_matrix)
