@@ -69,5 +69,20 @@ if uploaded_file:
         else:
             st.error("Vérifiez que votre fichier contient les colonnes 'rdt' et 'bande'.")
 
+    # ... (début du code)
+        # Lecture des données
+        gdf = gpd.read_file(path_to_shp)
+        
+        # Conversion GPS pour la météo
+        gdf_wgs84 = gdf.to_crs(epsg=4326)
+        df = pd.DataFrame(gdf_wgs84.drop(columns='geometry'))
+        
+        # ASTUCE MAGIQUE : On force toutes les colonnes en minuscules !
+        df.columns = df.columns.str.lower()
+        
+        df['lat'] = gdf_wgs84.geometry.y
+        df['lon'] = gdf_wgs84.geometry.x
+        # ... (suite du code)
+
     except Exception as e:
         st.error(f"Erreur lors de la lecture du fichier : {e}")
