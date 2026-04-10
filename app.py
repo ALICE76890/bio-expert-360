@@ -1,88 +1,46 @@
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
-import plotly.express as px
-from scipy import stats
-import requests
-from datetime import datetime, timedelta
-import io
-import zipfile
 import os
+import zipfile
+import io
 
-st.set_page_config(page_title="Bio-Expert 360", layout="wide", page_icon="🌱")
+st.set_page_config(page_title="Mode Diagnostic", layout="wide")
+st.title("🛠️ Mode Diagnostic Bio-Expert")
 
-st.title("🌱 BIO-EXPERT 360")
-st.markdown("### Analyse d'essais biostimulants par batteuse")
-
-# --- BARRE LATÉRALE ---
-with st.sidebar:
-    st.header("⚙️ Paramètres")
-    uploaded_file = st.file_uploader("Charger ZIP (contenant .shp, .dbf, .shx)", type=["zip"])
-    prix_vente = st.number_input("Prix Vente (€/T)", value=210)
-    cout_prod = st.number_input("Coût Produit (€/ha)", value=45)
-    d_appli = st.date_input("Date Application", datetime(2026, 3, 15))
+uploaded_file = st.sidebar.file_uploader("Charger le fichier ZIP", type=["zip"])
 
 if uploaded_file:
+    st.subheader("🔍 Étape 1 : Que contient vraiment votre ZIP ?")
     try:
-        # Extraction du ZIP
         with zipfile.ZipFile(io.BytesIO(uploaded_file.read())) as z:
+            file_list = z.namelist()
+            st.write("Fichiers trouvés dans le ZIP :", file_list)
             z.extractall("temp_shp")
-        
-        # Identification du fichier SHP
+            
+        # Vérification de la présence du .dbf
+        dbf_files = [f for f in file_list if f.lower().endswith('.dbf')]
+        if not dbf_files:
+            st.error("🚨 Problème majeur : Aucun fichier .dbf trouvé dans le ZIP ! Le .dbf est obligatoire car c'est lui qui contient les colonnes de rendement.")
+            st.stop()
+            
+    except Exception as e:
+        st.error(f"Erreur lors de l'ouverture du ZIP : {e}")
+        st.stop()
+
+    st.subheader("🔍 Étape 2 : Quelles sont les colonnes vues par le robot ?")
+    try:
         shp_file = [f for f in os.listdir("temp_shp") if f.endswith('.shp')][0]
         path_to_shp = os.path.join("temp_shp", shp_file)
-
-        # Lecture des données (449 points d'échantillonnage détectés) [cite: 1, 13, 31]
+        
         gdf = gpd.read_file(path_to_shp)
         
-        # Conversion GPS pour la météo
-        gdf_wgs84 = gdf.to_crs(epsg=4326)
-        df = pd.DataFrame(gdf_wgs84.drop(columns='geometry'))
-        df['lat'] = gdf_wgs84.geometry.y
-        df['lon'] = gdf_wgs84.geometry.x
-
-        # --- AFFICHAGE DES RÉSULTATS ---
-        if 'rdt' in df.columns and 'bande' in df.columns:
-            m = df.groupby('bande')['rdt'].mean()
-            gain = m.get('produit', 0) - m.get('temoin', 0)
-            marge = ((gain/10) * prix_vente) - cout_prod
-            
-            # KPIs
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Gain de rendement", f"+{round(gain, 2)} qtx/ha")
-            col2.metric("Marge Nette", f"{round(marge, 2)} €/ha")
-            
-            t_stat, p_val = stats.ttest_ind(df[df['bande']=='produit']['rdt'], df[df['bande']=='temoin']['rdt'])
-            col3.metric("Fiabilité Statistique", "Prouvé ✅" if p_val < 0.05 else "Incertain ❌", f"p={round(p_val,4)}")
-
-            # Graphique
-            st.plotly_chart(px.box(df, x="potentiel" if "potentiel" in df.columns else "bande", 
-                                   y="rdt", color="bande", title="Comparatif Rendement vs Potentiel Sol"), use_container_width=True)
-
-            # Météo via API
-            st.subheader("🌦️ Analyse Climatique post-application")
-            lat_m, lon_m = df['lat'].mean(), df['lon'].mean()
-            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat_m}&longitude={lon_m}&start_date={d_appli}&end_date={d_appli + timedelta(days=7)}&daily=temperature_2m_max,precipitation_sum&timezone=Europe%2FBerlin"
-            res = requests.get(url).json()
-            meteo_df = pd.DataFrame(res['daily'])
-            st.line_chart(meteo_df.set_index('time')['temperature_2m_max'])
-        else:
-            st.error("Vérifiez que votre fichier contient les colonnes 'rdt' et 'bande'.")
-
-    # ... (début du code)
-        # Lecture des données
-        gdf = gpd.read_file(path_to_shp)
+        # On affiche la liste EXACTE des colonnes
+        st.write("Liste brute des colonnes :")
+        st.code(list(gdf.columns))
         
-        # Conversion GPS pour la météo
-        gdf_wgs84 = gdf.to_crs(epsg=4326)
-        df = pd.DataFrame(gdf_wgs84.drop(columns='geometry'))
+        st.write("Aperçu des 5 premières lignes de données :")
+        st.dataframe(gdf.head())
         
-        # ASTUCE MAGIQUE : On force toutes les colonnes en minuscules !
-        df.columns = df.columns.str.lower()
-        
-        df['lat'] = gdf_wgs84.geometry.y
-        df['lon'] = gdf_wgs84.geometry.x
-        # ... (suite du code)
-
     except Exception as e:
-        st.error(f"Erreur lors de la lecture du fichier : {e}")
+        st.error(f"Erreur lors de la lecture du fichier Shapefile : {e}")
