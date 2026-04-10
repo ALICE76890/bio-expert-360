@@ -9,24 +9,27 @@ import io
 import zipfile
 import os
 
-st.set_page_config(page_title="Bio-Expert Live", layout="wide")
-st.title("🌱 Bio-Expert 360 (Moteur Live)")
+# --- 1. CONFIGURATION ---
+st.set_page_config(page_title="Bio-Expert Rapide", layout="wide")
+st.title("🌱 Bio-Expert 360 (Mode Stable)")
 
-# --- 1. CONFIGURATION GAUCHE ---
+# --- 2. MENU GAUCHE ---
 with st.sidebar:
     st.header("📥 Données")
-    uploaded_file = st.file_uploader("ZIP de la batteuse", type=["zip"])
+    uploaded_file = st.file_uploader("Charger ZIP", type=["zip"])
+    
+    st.header("🌾 Essai")
     d_semis = st.date_input("Date de Semis", datetime(2025, 10, 20))
     d_appli = st.date_input("Date d'Application", datetime(2026, 3, 10))
     
-    st.header("🧹 Paramètres")
-    # On laisse l'utilisateur choisir s'il veut nettoyer les 449 points
-    activer_iqr = st.checkbox("Nettoyer les données (IQR)", value=True)
+    st.header("💰 Économie")
+    prix_t = st.number_input("Prix Vente (€/T)", value=210)
+    cout_ha = st.number_input("Coût Produit (€/ha)", value=45)
 
-# --- 2. TRAITEMENT ---
+# --- 3. TRAITEMENT ---
 if uploaded_file:
     try:
-        # Lecture du fichier
+        # Extraction simple
         with zipfile.ZipFile(io.BytesIO(uploaded_file.read())) as z:
             z.extractall("temp")
         shp = [f for f in os.listdir("temp") if f.endswith('.shp')][0]
@@ -34,63 +37,49 @@ if uploaded_file:
         df = pd.DataFrame(gdf.drop(columns='geometry'))
         df.columns = df.columns.str.lower()
         
-        # Mapping Produit / Témoin
-        val_p = st.selectbox("Quelle valeur de 'bande' = Produit ?", df['bande'].unique())
+        # Mapping Produit vs Témoin
+        val_p = st.selectbox("Quelle valeur = Produit ?", df['bande'].unique())
         df['grp'] = df['bande'].apply(lambda x: 'Produit' if x == val_p else 'Témoin')
 
-        # --- NETTOYAGE IQR (Tukey) ---
-        df_final = df.copy()
-        if activer_iqr:
-            q1 = df['rdt'].quantile(0.25)
-            q3 = df['rdt'].quantile(0.75)
-            iqr = q3 - q1
-            # On filtre pour garder le "coeur" des données
-            df_final = df[(df['rdt'] >= q1 - 1.5*iqr) & (df['rdt'] <= q3 + 1.5*iqr)]
-        
-        # --- STATISTIQUES ---
-        m_p = df_final[df_final['grp'] == 'Produit']['rdt'].mean()
-        m_t = df_final[df_final['grp'] == 'Témoin']['rdt'].mean()
+        # --- NETTOYAGE IQR (Simple & Efficace) ---
+        q1 = df['rdt'].quantile(0.25)
+        q3 = df['rdt'].quantile(0.75)
+        iqr = q3 - q1
+        df_clean = df[(df['rdt'] >= q1 - 1.5*iqr) & (df['rdt'] <= q3 + 1.5*iqr)]
+        points_enleves = len(df) - len(df_clean)
+
+        # --- CALCULS ---
+        m_p = df_clean[df_clean['grp'] == 'Produit']['rdt'].mean()
+        m_t = df_clean[df_clean['grp'] == 'Témoin']['rdt'].mean()
         gain = m_p - m_t
-        _, p_val = stats.ttest_ind(df_final[df_final['grp']=='Produit']['rdt'], 
-                                   df_final[df_final['grp']=='Témoin']['rdt'])
+        marge = ((gain/10) * prix_t) - cout_ha
+        _, p_val = stats.ttest_ind(df_clean[df_clean['grp']=='Produit']['rdt'], 
+                                   df_clean[df_clean['grp']=='Témoin']['rdt'])
 
         # --- AFFICHAGE ---
         c1, c2, c3 = st.columns(3)
-        c1.metric("Gain Nettoyé", f"+{round(gain, 2)} qtx")
-        c2.metric("P-Value", f"{p_val:.2e}")
-        c3.metric("Points analysés", f"{len(df_final)} / {len(df)}")
+        c1.metric("Gain RDT", f"+{round(gain, 2)} qtx")
+        c2.metric("Marge Nette", f"{round(marge, 2)} €/ha")
+        c3.metric("Fiabilité (p)", f"{p_val:.4f}")
 
-        tab1, tab2 = st.tabs(["📊 Rendement", "🌦️ Météo Live"])
+        st.write(f"ℹ️ {points_enleves} points aberrants ont été supprimés par le filtre IQR.")
 
-        with tab1:
-            st.plotly_chart(px.box(df_final, x="potentiel", y="rdt", color="grp", notched=True))
+        tabs = st.tabs(["📊 Graphique", "🌦️ Météo"])
 
-        with tab2:
-            # --- APPEL OPEN-METEO LIVE ---
+        with tabs[0]:
+            st.plotly_chart(px.box(df_clean, x="potentiel", y="rdt", color="grp", notched=True))
+
+        with tabs[1]:
+            # Météo ultra-sécurisée (7 derniers jours seulement pour tester)
             lat, lon = gdf.geometry.y.mean(), gdf.geometry.x.mean()
-            # On demande les 60 derniers jours pour être sûr d'englober l'appli
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&past_days=60&daily=temperature_2m_max,precipitation_sum&timezone=auto"
-            
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&past_days=7&daily=temperature_2m_max,precipitation_sum&timezone=auto"
             try:
-                res = requests.get(url).json()
-                w_df = pd.DataFrame(res['daily'])
-                w_df['time'] = pd.to_datetime(w_df['time'])
-                
-                # On filtre depuis le semis pour le graphique
-                mask = w_df['time'] >= pd.to_datetime(d_semis)
-                plot_df = w_df[mask]
-
-                # Graphique Température
-                st.write(f"📍 Météo récupérée pour : {round(lat,3)}, {round(lon,3)}")
-                fig_t = px.line(plot_df, x='time', y='temperature_2m_max', title="T° Max (60 derniers jours)")
-                st.plotly_chart(fig_t, use_container_width=True)
-                
-                # Graphique Pluie
-                fig_p = px.bar(plot_df, x='time', y='precipitation_sum', title="Pluie (mm)")
-                st.plotly_chart(fig_p, use_container_width=True)
-                
+                res = requests.get(url).json()['daily']
+                w_df = pd.DataFrame(res)
+                st.line_chart(w_df.set_index('time')['temperature_2m_max'])
+                st.bar_chart(w_df.set_index('time')['precipitation_sum'])
             except:
-                st.error("L'API météo n'a pas pu répondre. Vérifie ta connexion.")
+                st.warning("Météo indisponible pour le moment.")
 
     except Exception as e:
-        st.error(f"Erreur de lecture : {e}")
+        st.error(f"Erreur : {e}")
