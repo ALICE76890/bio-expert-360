@@ -14,11 +14,11 @@ import numpy as np
 # --- CONFIGURATION PAGE ---
 st.set_page_config(page_title="Bio-Expert 360 Pro", layout="wide", page_icon="🌱")
 
-# --- PARAMÈTRES AGRONOMIQUES ---
+# --- SEUILS DE STRESS ARVALIS ---
 PARAM_CULTURES = {
-    "Blé Tendre": {"zero": 0, "max": 25, "flo": 1100, "rec": 2100},
-    "Maïs": {"zero": 6, "max": 35, "flo": 900, "rec": 1700},
-    "Orge": {"zero": 0, "max": 25, "flo": 1000, "rec": 1950}
+    "Blé Tendre": {"zero": 0, "max": 25, "flo": 1100, "rec": 2100, "base_t": 0},
+    "Maïs": {"zero": 6, "max": 35, "flo": 900, "rec": 1700, "base_t": 6},
+    "Orge": {"zero": 0, "max": 25, "flo": 1000, "rec": 1950, "base_t": 0}
 }
 
 # --- SIDEBAR ---
@@ -27,9 +27,8 @@ with st.sidebar:
     with st.expander("📥 IMPORTATION DONNÉES", expanded=True):
         uploaded_file = st.file_uploader("Fichier QGIS (.zip)", type=["zip"])
     
-    with st.expander("🧹 NETTOYAGE DES DONNÉES", expanded=True):
-        clean_outliers = st.checkbox("Activer le filtre anti-aberrants", value=True)
-        st.info("Méthode : IQR 1.5x")
+    with st.expander("🧹 NETTOYAGE IQR (Tukey 1.5x)", expanded=True):
+        clean_outliers = st.checkbox("Filtrer les points aberrants", value=True)
 
     with st.expander("🌾 CONFIGURATION ESSAI", expanded=True):
         culture = st.selectbox("Culture", list(PARAM_CULTURES.keys()))
@@ -43,7 +42,7 @@ with st.sidebar:
 # --- TRAITEMENT PRINCIPAL ---
 if uploaded_file:
     try:
-        # 1. Extraction et Lecture
+        # 1. Lecture
         with zipfile.ZipFile(io.BytesIO(uploaded_file.read())) as z:
             z.extractall("temp")
         shp_name = [f for f in os.listdir("temp") if f.endswith('.shp')][0]
@@ -51,12 +50,10 @@ if uploaded_file:
         df = pd.DataFrame(gdf.drop(columns='geometry'))
         df.columns = df.columns.str.lower()
         
-        # 2. Mapping Produit/Témoin
         val_p = st.sidebar.selectbox("Ligne Produit ?", df['bande'].unique())
         df['grp'] = df['bande'].apply(lambda x: 'Produit' if x == val_p else 'Témoin')
 
-        # 3. Nettoyage IQR (Méthode de Tukey)
-        n_initial = len(df)
+        # 2. Nettoyage & Stats Robustes
         if clean_outliers:
             clean_list = []
             for g in ['Produit', 'Témoin']:
@@ -65,85 +62,90 @@ if uploaded_file:
                 iqr = q3 - q1
                 sub = sub[(sub['rdt'] >= q1 - 1.5*iqr) & (sub['rdt'] <= q3 + 1.5*iqr)]
                 clean_list.append(sub)
-            df_cleaned = pd.concat(clean_list)
+            df_final = pd.concat(clean_list)
         else:
-            df_cleaned = df.copy()
+            df_final = df.copy()
+
+        data_p = df_final[df_final['grp'] == 'Produit']['rdt'].dropna()
+        data_t = df_final[df_final['grp'] == 'Témoin']['rdt'].dropna()
+
+        # --- TESTS STATISTIQUES ---
+        # Test A : Normalité (Shapiro)
+        _, p_norm = stats.shapiro(data_p)
         
-        n_removed = n_initial - len(df_cleaned)
+        # Test B : Student (Paramétrique)
+        t_stat, p_student = stats.ttest_ind(data_p, data_t)
+        
+        # Test C : Wilcoxon (Non-paramétrique, plus robuste si données bruitées)
+        _, p_wilcoxon = stats.mannwhitneyu(data_p, data_t)
 
-        # 4. Calculs Statistiques
-        data_p = df_cleaned[df_cleaned['grp'] == 'Produit']['rdt'].dropna()
-        data_t = df_cleaned[df_cleaned['grp'] == 'Témoin']['rdt'].dropna()
         gain = data_p.mean() - data_t.mean()
-        marge = ((gain/10) * prix_vente) - cout_prod
-        t_stat, p_val = stats.ttest_ind(data_p, data_t)
 
-        # 5. Affichage des KPIs
+        # 3. Affichage KPIs
         k1, k2, k3 = st.columns(3)
-        k1.metric("GAIN (NETTOYÉ)", f"+{round(gain, 2)} qtx/ha")
-        k2.metric("FIABILITÉ (P-VALUE)", f"{p_val:.2e}")
-        k3.metric("MARGE NETTE", f"{round(marge, 2)} €/ha")
+        k1.metric("GAIN RDT", f"+{round(gain, 2)} qtx/ha")
+        k2.metric("FIABILITÉ (P-STUDENT)", f"{p_student:.2e}")
+        k3.metric("MARGE NETTE", f"{round(((gain/10)*prix_vente)-cout_prod, 2)} €/ha")
 
-        # 6. Onglets
-        tab_rdt, tab_climat, tab_stats, tab_sol = st.tabs(["📊 Rendement", "🌦️ Climat", "🔬 Preuve & Nettoyage", "🧪 Sol"])
+        tab_rdt, tab_climat, tab_stats_expert, tab_sol = st.tabs(["📊 Rendement", "🌦️ Climat & Stress Arvalis", "🔬 Preuve Statistique Expert", "🧪 Sol"])
 
         with tab_rdt:
-            st.subheader("📍 Réponse RDT vs Potentiel Sol")
-            fig_rdt = px.box(df_cleaned, x="potentiel", y="rdt", color="grp", notched=True,
-                             color_discrete_map={'Témoin': '#3498db', 'Produit': '#2ecc71'})
-            st.plotly_chart(fig_rdt, use_container_width=True)
+            st.plotly_chart(px.box(df_final, x="potentiel", y="rdt", color="grp", notched=True), use_container_width=True)
 
         with tab_climat:
-            st.subheader("📅 Timeline Climatique & Stress")
+            st.subheader("🌦️ Analyse Climatique Multi-Annuelle (2025-2026)")
             lat, lon = gdf.geometry.y.mean(), gdf.geometry.x.mean()
             
-            # Correction Météo : Utilisation de l'API Forecast (plus stable pour le récent)
-            # On calcule le nombre de jours entre semis et aujourd'hui
-            start_date = pd.to_datetime(d_semis)
-            past_days = (pd.Timestamp.now() - start_date).days
-            past_days = max(7, min(92, past_days)) # Sécurité API entre 7 et 92 jours
+            # API Archive pour gérer 2025 et début 2026
+            d_start = d_semis.strftime("%Y-%m-%d")
+            d_end = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
             
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&past_days={past_days}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,shortwave_radiation_sum&timezone=auto"
+            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={d_start}&end_date={d_end}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,shortwave_radiation_sum&timezone=auto"
             
             try:
                 r = requests.get(url).json()
-                if "daily" in r:
-                    w_df = pd.DataFrame(r['daily'])
-                    w_df['time'] = pd.to_datetime(w_df['time'])
-                    
-                    fig_w = go.Figure()
-                    # Rayonnement (MJ/m²)
-                    fig_w.add_trace(go.Scatter(x=w_df['time'], y=w_df['shortwave_radiation_sum'], fill='tozeroy', name="Rayonnement", line_color='rgba(255,215,0,0.2)', yaxis="y3"))
-                    # Pluie
-                    fig_w.add_trace(go.Bar(x=w_df['time'], y=w_df['precipitation_sum'], name="Pluie", marker_color='blue', opacity=0.4, yaxis="y2"))
-                    # Températures
-                    fig_w.add_trace(go.Scatter(x=w_df['time'], y=w_df['temperature_2m_max'], name="T° Max", line_color='red'))
-                    fig_w.add_trace(go.Scatter(x=w_df['time'], y=w_df['temperature_2m_min'], name="T° Min", line_color='blue', line=dict(dash='dot')))
-                    
-                    # Ligne Application
-                    fig_w.add_vline(x=pd.Timestamp(d_appli).timestamp() * 1000, line_dash="dash", line_color="green", annotation_text="Appli")
+                w_df = pd.DataFrame(r['daily'])
+                w_df['time'] = pd.to_datetime(w_df['time'])
+                
+                # Calcul Stress Arvalis
+                p_c = PARAM_CULTURES[culture]
+                w_df['stress_thermique'] = w_df['temperature_2m_max'] >= p_c['max']
+                
+                fig_w = go.Figure()
+                fig_w.add_trace(go.Bar(x=w_df['time'], y=w_df['precipitation_sum'], name="Pluie (mm)", marker_color='blue', opacity=0.3))
+                fig_w.add_trace(go.Scatter(x=w_df['time'], y=w_df['temperature_2m_max'], name="T° Max", line_color='red'))
+                
+                # Zone de Stress (Rouge)
+                stress_only = w_df[w_df['stress_thermique']]
+                fig_w.add_trace(go.Scatter(x=stress_only['time'], y=stress_only['temperature_2m_max'], mode='markers', name="Alerte Stress Arvalis", marker=dict(color='orange', size=8)))
 
-                    fig_w.update_layout(yaxis2=dict(overlaying="y", side="right"), yaxis3=dict(overlaying="y", side="right", anchor="free", position=1))
-                    st.plotly_chart(fig_w, use_container_width=True)
-                else:
-                    st.warning("Données météo momentanément indisponibles sur cette zone.")
+                fig_w.add_vline(x=pd.to_datetime(d_appli).timestamp() * 1000, line_dash="dash", line_color="green", annotation_text="Appli")
+                st.plotly_chart(fig_w, use_container_width=True)
+                st.write(f"⚠️ Nombre de jours de stress (> {p_c['max']}°C) détectés : **{len(stress_only)} jours**.")
             except:
-                st.error("Erreur lors de l'appel météo.")
+                st.error("Erreur de récupération des archives climatiques.")
 
-        with tab_stats:
-            st.header("🔬 Qualité des données")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Points initiaux", n_initial)
-            c2.metric("Points supprimés", n_removed, delta_color="inverse")
-            c3.metric("Conservation", f"{round((len(df_cleaned)/n_initial)*100, 1)}%")
-            
-            st.plotly_chart(px.histogram(df_cleaned, x="rdt", color="grp", barmode="overlay"), use_container_width=True)
+        with tab_stats_expert:
+            st.header("🔬 Analyse de Robustesse Statistique")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**1. Test de Normalité (Shapiro-Wilk)**")
+                if p_norm > 0.05:
+                    st.success(f"p={round(p_norm,4)} : Les données suivent une loi normale. Le test de Student est valide.")
+                else:
+                    st.warning(f"p={round(p_norm,4)} : Les données sont hétérogènes. Le test de Wilcoxon est plus fiable ici.")
+                
+                st.write("**2. Comparaison des tests**")
+                st.write(f"- Test de Student (Paramétrique) : p = `{p_student:.2e}`")
+                st.write(f"- Test de Wilcoxon (Non-paramétrique) : p = `{p_wilcoxon:.2e}`")
+                
+            with col2:
+                st.write("**3. Histogramme de Distribution**")
+                st.plotly_chart(px.histogram(df_final, x="rdt", color="grp", barmode="overlay"), use_container_width=True)
 
         with tab_sol:
-            st.subheader("🧪 Corrélation Éléments du Sol")
-            sol_cols = [c for c in ['rdt', 'ph', 'p', 'k', 'mg', 'ca'] if c in df_cleaned.columns]
-            if len(sol_cols) > 1:
-                st.plotly_chart(px.imshow(df_cleaned[sol_cols].corr(), text_auto=True, color_continuous_scale="RdBu_r"), use_container_width=True)
+            sol_cols = [c for c in ['rdt', 'ph', 'p', 'k', 'mg', 'ca'] if c in df_final.columns]
+            st.plotly_chart(px.imshow(df_final[sol_cols].corr(), text_auto=True, color_continuous_scale="RdBu_r"), use_container_width=True)
 
     except Exception as e:
         st.error(f"Erreur système : {e}")
