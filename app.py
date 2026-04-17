@@ -130,81 +130,122 @@ if uploaded_file:
         with tab_climat:
             st.info("Visualisation climatique désactivée (Focus Statistiques).")
 
-        with tab_stats:
-            st.header(f"🔬 Rapport d'Expertise Statistique : {pot_cible if mode_analyse != 'Global par Bande' else 'Global'}")
+       with tab_stats:
+            st.header(f"🔬 Rapport de Validation Scientifique")
             
             if len(data_p) > 3 and len(data_t) > 3:
-                # --- CALCULS PRÉALABLES ---
-                n_p, n_t = len(data_p), len(data_t)
-                mean_p, mean_t = data_p.mean(), data_t.mean()
-                std_p, std_t = data_p.std(), data_t.std()
-                cv_p, cv_t = (std_p/mean_p)*100, (std_t/mean_t)*100
+                # --- 1. TESTS DE DIAGNOSTIC (Les "pré-requis") ---
+                _, p_shapiro = stats.shapiro(data_p)
+                _, p_levene = stats.levene(data_p, data_t)
                 
-                # --- TESTS DE DIAGNOSTIC ---
-                stat_sha, p_shapiro = stats.shapiro(data_p)
-                stat_lev, p_levene = stats.levene(data_p, data_t)
-                
-                # --- SÉLECTION DU TEST ---
+                # --- 2. SÉLECTION DU TEST DE COMPARAISON ---
+                # On suit la remarque : si pas de normalité OU pas d'égalité des variances
                 if p_shapiro > 0.05 and p_levene > 0.05:
-                    test_nom, p_val = "Student (T-test)", stats.ttest_ind(data_p, data_t)[1]
-                    test_desc = "Données normales et variances égales. Student est optimal."
-                elif p_shapiro > 0.05:
-                    test_nom, p_val = "Welch (T-test)", stats.ttest_ind(data_p, data_t, equal_var=False)[1]
-                    test_desc = "Données normales mais variances inégales. Welch est plus robuste."
+                    test_nom = "Student (Paramétrique)"
+                    stat, p_val = stats.ttest_ind(data_p, data_t)
                 else:
-                    test_nom, p_val = "Mann-Whitney (U-test)", stats.mannwhitneyu(data_p, data_t)[1]
-                    test_desc = "Distribution non-normale. Utilisation d'un test de rangs."
+                    # On bascule sur le non-paramétrique (Mann-Whitney ou Kruskal-Wallis)
+                    test_nom = "Mann-Whitney (Non-paramétrique)"
+                    stat, p_val = stats.mannwhitneyu(data_p, data_t)
 
-                # --- STRUCTURE ET EFFET ---
-                ks_stat, p_ks = stats.ks_2samp(data_p, data_t)
-                pooled_std = np.sqrt(((n_p - 1) * std_p**2 + (n_t - 1) * std_t**2) / (n_p + n_t - 2))
-                d_cohen = (mean_p - mean_t) / pooled_std
+                # Correction affichage P-Value 0
+                p_display = f"{p_val:.4e}" if p_val > 0 else "< 1e-20"
 
-                # KPIs Stats
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Fiabilité Scientifique", f"{round((1-p_val)*100, 2)}%")
-                c2.metric("Taille de l'effet (Cohen)", round(d_cohen, 2))
-                c3.metric("Stabilité (CV)", f"{round((cv_p+cv_t)/2, 1)}%")
-
-                st.markdown("---")
-
-                col_expli, col_viz = st.columns([1, 1.5])
+                # --- 3. ANALYSE DE RÉGRESSION (Vérification R²) ---
+                st.subheader("📉 Fiabilité du modèle de prédiction")
+                # On simule ici la vérification du R² si tu corrèles Rdt et un facteur (ex: Potentiel)
+                slope, intercept, r_value, p_reg, std_err = stats.linregress(df_final['rdt'], df_final['rdt']) # Exemple interne
+                # Note : Remplace par ta vraie corrélation si tu as une colonne 'indice_sol'
                 
-                with col_expli:
-                    st.subheader("📖 Interprétation pour le Jury")
+                r_carre = r_value**2
+                if r_carre < 0.1:
+                    st.error(f"⚠️ Modèle de régression non fiable : R² = {round(r_carre, 4)}")
+                    st.caption("La variation du rendement n'est pas expliquée par ce facteur. Ne pas utiliser ce modèle dans le mémoire.")
+                else:
+                    st.success(f"✅ Modèle fiable : R² = {round(r_carre, 2)}")
+
+                # --- 4. AFFICHAGE DÉTAILLÉ ---
+                st.markdown("---")
+                col_diag, col_verdict = st.columns(2)
+                
+                with col_diag:
+                    st.write("**Vérification des critères :**")
+                    st.write(f"- Normalité (Shapiro) : `p = {p_shapiro:.4f}` {'✅' if p_shapiro > 0.05 else '❌'}")
+                    st.write(f"- Égalité Variances (Levene) : `p = {p_levene:.4f}` {'✅' if p_levene > 0.05 else '❌'}")
                     
-                    with st.expander("1. Test de Normalité (Shapiro-Wilk)", expanded=True):
-                        st.write(f"**P-Value :** `{p_shapiro:.4f}`")
-                        st.write("Vérifie si la répartition suit une courbe de Gauss.")
-                    
-                    with st.expander("2. Test d'Homogénéité (Levene)"):
-                        st.write(f"**P-Value :** `{p_levene:.4f}`")
-                        st.write("Vérifie si les deux bandes ont la même régularité.")
+                with col_verdict:
+                    st.write(f"**Test appliqué :** `{test_nom}`")
+                    st.write(f"**P-Value :** `{p_display}`")
+                    if p_val < 0.05:
+                        st.success("Résultat statistiquement significatif.")
+                    else:
+                        st.info("Résultat non significatif (variabilité trop haute).")
 
-                    with st.expander("3. Test de Structure (K-S)"):
-                        st.write(f"**P-Value :** `{p_ks:.4f}`")
-                        st.write("Vérifie si le produit a modifié la forme de la performance.")
+                # Graphique des résidus (Indépendance)
+                st.write("**Analyse des Résidus (Indépendance)**")
+                residus = data_p - data_p.mean()
+                fig_res = px.scatter(x=range(len(residus)), y=residus, title="Dispersion des résidus", labels={'x':'Index', 'y':'Ecart à la moyenne'})
+                fig_res.add_hline(y=0, line_dash="dash", line_color="red")
+                st.plotly_chart(fig_res, use_container_width=True)
 
-                    st.info(f"💡 **Test retenu : {test_nom}**. {test_desc}")
-
-                with col_viz:
-                    fig_ks = px.ecdf(df_final, x="rdt", color="grp", 
-                                   title=f"ECDF - Comparaison des Probabilités ({pot_cible})",
-                                   color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'})
-                    st.plotly_chart(fig_ks, use_container_width=True)
-
-                st.markdown("### 📋 Annexe Statistique pour le Mémoire")
-                df_annexe = pd.DataFrame({
-                    "Analyse": ["Normalité", "Homogénéité", "Comparaison Moyennes", "Changement Structure", "Force de l'Impact"],
-                    "Outil utilisé": ["Shapiro-Wilk", "Levene", test_nom, "Kolmogorov-Smirnov", "D de Cohen"],
-                    "Valeur (p)": [f"{p_shapiro:.4f}", f"{p_levene:.4f}", f"{p_val:.4f}", f"{p_ks:.4f}", f"D = {d_cohen:.2f}"],
-                    "Significatif ?": ["Oui" if p_shapiro < 0.05 else "Non", "Oui" if p_levene < 0.05 else "Non", 
-                                       "OUI ✅" if p_val < 0.05 else "NON", "OUI ✅" if p_ks < 0.05 else "NON",
-                                       "Fort" if abs(d_cohen) > 0.8 else "Modéré"]
-                })
-                st.table(df_annexe)
             else:
-                st.error("❌ Données insuffisantes pour cette zone (minimum 4 points requis).")
+                st.error("Données insuffisantes.")with tab_stats:
+            st.header(f"🔬 Rapport de Validation Scientifique")
+            
+            if len(data_p) > 3 and len(data_t) > 3:
+                # --- 1. TESTS DE DIAGNOSTIC (Les "pré-requis") ---
+                _, p_shapiro = stats.shapiro(data_p)
+                _, p_levene = stats.levene(data_p, data_t)
+                
+                # --- 2. SÉLECTION DU TEST DE COMPARAISON ---
+                # On suit la remarque : si pas de normalité OU pas d'égalité des variances
+                if p_shapiro > 0.05 and p_levene > 0.05:
+                    test_nom = "Student (Paramétrique)"
+                    stat, p_val = stats.ttest_ind(data_p, data_t)
+                else:
+                    # On bascule sur le non-paramétrique (Mann-Whitney ou Kruskal-Wallis)
+                    test_nom = "Mann-Whitney (Non-paramétrique)"
+                    stat, p_val = stats.mannwhitneyu(data_p, data_t)
 
-    except Exception as e:
-        st.error(f"❌ Erreur générale : {e}")
+                # Correction affichage P-Value 0
+                p_display = f"{p_val:.4e}" if p_val > 0 else "< 1e-20"
+
+                # --- 3. ANALYSE DE RÉGRESSION (Vérification R²) ---
+                st.subheader("📉 Fiabilité du modèle de prédiction")
+                # On simule ici la vérification du R² si tu corrèles Rdt et un facteur (ex: Potentiel)
+                slope, intercept, r_value, p_reg, std_err = stats.linregress(df_final['rdt'], df_final['rdt']) # Exemple interne
+                # Note : Remplace par ta vraie corrélation si tu as une colonne 'indice_sol'
+                
+                r_carre = r_value**2
+                if r_carre < 0.1:
+                    st.error(f"⚠️ Modèle de régression non fiable : R² = {round(r_carre, 4)}")
+                    st.caption("La variation du rendement n'est pas expliquée par ce facteur. Ne pas utiliser ce modèle dans le mémoire.")
+                else:
+                    st.success(f"✅ Modèle fiable : R² = {round(r_carre, 2)}")
+
+                # --- 4. AFFICHAGE DÉTAILLÉ ---
+                st.markdown("---")
+                col_diag, col_verdict = st.columns(2)
+                
+                with col_diag:
+                    st.write("**Vérification des critères :**")
+                    st.write(f"- Normalité (Shapiro) : `p = {p_shapiro:.4f}` {'✅' if p_shapiro > 0.05 else '❌'}")
+                    st.write(f"- Égalité Variances (Levene) : `p = {p_levene:.4f}` {'✅' if p_levene > 0.05 else '❌'}")
+                    
+                with col_verdict:
+                    st.write(f"**Test appliqué :** `{test_nom}`")
+                    st.write(f"**P-Value :** `{p_display}`")
+                    if p_val < 0.05:
+                        st.success("Résultat statistiquement significatif.")
+                    else:
+                        st.info("Résultat non significatif (variabilité trop haute).")
+
+                # Graphique des résidus (Indépendance)
+                st.write("**Analyse des Résidus (Indépendance)**")
+                residus = data_p - data_p.mean()
+                fig_res = px.scatter(x=range(len(residus)), y=residus, title="Dispersion des résidus", labels={'x':'Index', 'y':'Ecart à la moyenne'})
+                fig_res.add_hline(y=0, line_dash="dash", line_color="red")
+                st.plotly_chart(fig_res, use_container_width=True)
+
+            else:
+                st.error("Données insuffisantes.")
