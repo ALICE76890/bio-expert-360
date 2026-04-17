@@ -106,31 +106,73 @@ if uploaded_file:
 
         with tab_climat:
             st.subheader(f"🌦️ Analyse du Stress Thermique : {culture}")
-            lat, lon = gdf.geometry.y.mean(), gdf.geometry.x.mean()
             
-            # API Open-Meteo avec filtres temporels
-            start_str, end_str = d_semis.strftime("%Y-%m-%d"), d_recolte.strftime("%Y-%m-%d")
-            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={start_str}&end_date={end_str}&daily=temperature_2m_max,precipitation_sum&timezone=auto"
+            # 1. Préparation des paramètres
+            lat, lon = gdf.geometry.y.mean(), gdf.geometry.x.mean()
+            p_c = PARAM_CULTURES[culture]
+            
+            # Sécurité dates : Open-Meteo Archive s'arrête souvent à J-5
+            date_max_archive = (datetime.now() - timedelta(days=5)).date()
+            safe_end_date = min(d_recolte, date_max_archive)
+            
+            start_str = d_semis.strftime("%Y-%m-%d")
+            end_str = safe_end_date.strftime("%Y-%m-%d")
+            
+            # URL de l'archive
+            url_archive = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={start_str}&end_date={end_str}&daily=temperature_2m_max,precipitation_sum&timezone=auto"
             
             try:
-                r = requests.get(url).json()
-                if 'daily' in r:
-                    w_df = pd.DataFrame(r['daily'])
-                    w_df['time'] = pd.to_datetime(w_df['time'])
-                    p_c = PARAM_CULTURES[culture]
+                res = requests.get(url_archive)
+                if res.status_code == 200:
+                    data = res.json()
+                    if 'daily' in data:
+                        w_df = pd.DataFrame(data['daily'])
+                        w_df['time'] = pd.to_datetime(w_df['time'])
+                        
+                        # Création du Graphique
+                        fig_w = go.Figure()
+                        
+                        # Pluviométrie
+                        fig_w.add_trace(go.Bar(x=w_df['time'], y=w_df['precipitation_sum'], 
+                                             name="Pluie (mm)", marker_color='rgba(0,0,255,0.2)'))
+                        
+                        # Courbe Température
+                        fig_w.add_trace(go.Scatter(x=w_df['time'], y=w_df['temperature_2m_max'], 
+                                                 name="T° Max", line=dict(color='red', width=2)))
+                        
+                        # Zones de Stress Arvalis
+                        fig_w.add_hrect(y0=p_c['echaudage'], y1=p_c['critique'], 
+                                        fillcolor="orange", opacity=0.2, annotation_text="Zone d'échaudage")
+                        fig_w.add_hrect(y0=p_c['critique'], y1=max(w_df['temperature_2m_max'].max(), 35), 
+                                        fillcolor="red", opacity=0.3, annotation_text="Stress Sévère")
+                        
+                        # Événements
+                        fig_w.add_vline(x=pd.to_datetime(d_appli), line_dash="dash", line_color="green", annotation_text="Application")
+                        
+                        fig_w.update_layout(title=f"Climat du {start_str} au {end_str}", hovermode="x unified")
+                        st.plotly_chart(fig_w, use_container_width=True)
+
+                        # Synthèse dynamique
+                        nb_jours_stress = len(w_df[w_df['temperature_2m_max'] >= p_c['echaudage']])
+                        st.info(f"💡 **Analyse Expert :** {nb_jours_stress} jours de stress thermique détectés sur la période.")
+                    else:
+                        st.warning("⚠️ L'API n'a pas renvoyé de données pour ces dates. Vérifie que la date de semis n'est pas trop ancienne.")
+                else:
+                    st.error(f"❌ Erreur API (Code {res.status_code}). Vérifie ta connexion ou les coordonnées GPS.")
                     
-                    fig_w = go.Figure()
-                    fig_w.add_trace(go.Bar(x=w_df['time'], y=w_df['precipitation_sum'], name="Pluie (mm)", marker_color='rgba(0,0,255,0.2)'))
-                    fig_w.add_trace(go.Scatter(x=w_df['time'], y=w_df['temperature_2m_max'], name="T° Max", line_color='red'))
-                    
-                    # Zones de Stress Arvalis
-                    fig_w.add_hrect(y0=p_c['echaudage'], y1=p_c['critique'], fillcolor="orange", opacity=0.2, annotation_text="Échaudage thermique")
-                    fig_w.add_hrect(y0=p_c['critique'], y1=w_df['temperature_2m_max'].max()+5, fillcolor="red", opacity=0.3, annotation_text="Stress Sévère")
-                    
-                    # Lignes Clés
-                    fig_w.add_vline(x=pd.to_datetime(d_appli), line_dash="dash", line_color="green", annotation_text="Application")
-                    fig_w.update_layout(hovermode="x unified")
-                    st.plotly_chart(fig_w, use_container_width=True)
+            except Exception as e:
+                st.error(f"Erreur technique : {e}")
+
+            # --- THÈSE ÉCRITE (Toujours visible pour ton MFE) ---
+            st.markdown("---")
+            st.markdown(f"""
+            ### 🔬 Note de Synthèse pour le Mémoire
+            **Aspect climatique et impact sur les résultats :**
+            
+            1. **Cinétique de l'échaudage :** Le blé est sensible dès **{p_c['echaudage']}°C**. Si le graphique montre des pics fréquents après l'application du produit, cela justifie l'utilisation de solutions de biostimulation ou de protection de la photosynthèse.
+            2. **Remplissage du grain :** Un stress thermique majeur (>{p_c['critique']}°C) provoque un arrêt prématuré de la translocation des sucres vers l'épi, impactant directement le PMG (Poids de Mille Grains).
+            3. **Interprétation du gain :** Si le gain de rendement est significatif malgré un fort stress thermique, le produit **BioExpert** a permis de maintenir la vacuité des vaisseaux conducteurs de la plante.
+            """)
 
                     # --- SECTION THÈSE CLIMATIQUE ---
                     st.markdown("---")
