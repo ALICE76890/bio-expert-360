@@ -125,50 +125,100 @@ if uploaded_file:
             st.plotly_chart(fig_rdt, use_container_width=True)
 
         with tab_stats:
-            st.header("🔬 Expertise Statistique Avancée")
+            st.header(f"🔬 Rapport d'Expertise Statistique Approfondi : {pot_cible}")
             
-            if n_final > 6:
-                # Diagnostics
+            # Recalcul des effectifs précis
+            n_p = len(data_p)
+            n_t = len(data_t)
+            
+            if n_p > 3 and n_t > 3:
+                # --- 1. CALCULS ET TESTS ---
+                mean_p, mean_t = data_p.mean(), data_t.mean()
+                std_p, std_t = data_p.std(), data_t.std()
+                cv_p, cv_t = (std_p/mean_p)*100, (std_t/mean_t)*100
+                
+                # Tests de diagnostic
                 _, p_shapiro = stats.shapiro(data_p)
                 _, p_levene = stats.levene(data_p, data_t)
-                residus = data_p - data_p.mean()
+                
+                # Test de structure (K-S)
+                ks_stat, p_ks = stats.ks_2samp(data_p, data_t)
+                
+                # Taille de l'effet (Cohen)
+                pooled_std = np.sqrt(((n_p - 1) * std_p**2 + (n_t - 1) * std_t**2) / (n_p + n_t - 2))
+                d_cohen = (mean_p - mean_t) / pooled_std
 
-                # Tests
+                # Sélection du test de comparaison
                 if p_shapiro > 0.05 and p_levene > 0.05:
                     test_nom, p_val = "Student", stats.ttest_ind(data_p, data_t)[1]
+                    justif = "Données normales et homogènes."
+                elif p_shapiro > 0.05:
+                    test_nom, p_val = "Welch", stats.ttest_ind(data_p, data_t, equal_var=False)[1]
+                    justif = "Variances hétérogènes détectées (Welch appliqué)."
                 else:
                     test_nom, p_val = "Mann-Whitney", stats.mannwhitneyu(data_p, data_t)[1]
+                    justif = "Distribution non-normale (Test de rangs appliqué)."
 
-                # Régression
-                slope, intercept, r_val, p_reg, std_err = stats.linregress(range(len(data_p)), data_p)
-                r_square = r_val**2
+                # --- AFFICHAGE DES EFFECTIFS (N) ---
+                st.subheader("1️⃣ Échantillonnage et Stabilité")
+                c_n1, c_n2, c_n3, c_n4 = st.columns(4)
+                c_n1.metric("N Produit", f"{n_p} pts")
+                c_n2.metric("N Témoin", f"{n_t} pts")
+                c_n3.metric("CV Produit", f"{round(cv_p, 1)}%")
+                c_n4.metric("CV Témoin", f"{round(cv_t, 1)}%")
+                
+                st.markdown("---")
 
-                # Affichage des diagnostics
-                st.subheader("1️⃣ Diagnostics de validité")
-                d1, d2, d3 = st.columns(3)
-                d1.write(f"**Normalité** : {'✅' if p_shapiro > 0.05 else '❌'} (p={round(p_shapiro,4)})")
-                d2.write(f"**Homogénéité** : {'✅' if p_levene > 0.05 else '❌'} (p={round(p_levene,4)})")
-                d3.write(f"**Indépendance** : ✅ (N={n_final})")
+                # --- RÉSULTATS EXPERTS ---
+                st.subheader("2️⃣ Puissance et Fiabilité du Gain")
+                col_res1, col_res2, col_res3 = st.columns(3)
+                
+                p_format = f"{p_val:.4e}" if p_val > 0 else "< 1e-20"
+                col_res1.metric("Fiabilité (1-p)", f"{round((1-p_val)*100, 2)}%")
+                
+                # Interprétation Cohen
+                if abs(d_cohen) < 0.2: d_desc = "Négligeable"
+                elif abs(d_cohen) < 0.5: d_desc = "Faible"
+                elif abs(d_cohen) < 0.8: d_desc = "Modérée"
+                else: d_desc = "Forte"
+                
+                col_res2.metric("Effet (Cohen's D)", round(d_cohen, 2), help=f"Impact {d_desc}")
+                col_res3.metric("Distinction (K-S)", "Oui ✅" if p_ks < 0.05 else "Non ❌")
 
                 st.markdown("---")
-                
-                # Conclusion Automatique
-                st.subheader("2️⃣ Conclusion de l'étude")
-                p_format = f"{p_val:.4e}" if p_val > 0 else "< 1e-20"
-                
-                if p_val < 0.05 and r_square > 0.3:
-                    st.success(f"✅ **Impact Réel Confirmé** (p={p_format} | R²={round(r_square,3)})")
-                    st.write("L'analyse prouve que la différence de rendement est significative et que le modèle est solide. Le produit a eu un impact direct et mesurable.")
-                elif p_val < 0.05:
-                    st.warning(f"⚠️ **Impact Significatif mais Bruit Fort** (p={p_format} | R²={round(r_square,3)})")
-                    st.write("Une différence est détectée, mais le faible R² indique que la variabilité naturelle du sol masque une partie de l'effet produit.")
-                else:
-                    st.error(f"❌ **Impact Non Démontré** (p={round(p_val,4)})")
-                    st.write("La différence de rendement peut être expliquée par le hasard ou la variabilité naturelle de la parcelle.")
 
-                st.plotly_chart(px.scatter(x=range(len(residus)), y=residus, title="Analyse des Résidus (Preuve de l'aléatoire)"), use_container_width=True)
+                # --- SYNTHÈSE RÉDACTIONNELLE ---
+                col_txt, col_graph = st.columns([1, 1.2])
+                with col_txt:
+                    st.write("### 📖 Analyse pour le mémoire")
+                    st.info(f"**Test retenu : {test_nom}**\n\n{justif}")
+                    
+                    if p_val < 0.05:
+                        st.success(f"L'impact de la modalité **{val_p}** est statistiquement prouvé sur cet échantillon.")
+                    else:
+                        st.warning("La variabilité est trop forte pour valider le gain avec certitude.")
+                    
+                    st.write(f"""
+                    **Points clés à retenir :**
+                    * La taille de l'effet (**D={round(d_cohen,2)}**) est qualifiée de **{d_desc}**.
+                    * Le test de Kolmogorov-Smirnov (**p={round(p_ks, 4)}**) confirme que le produit a 
+                    **{'modifié' if p_ks < 0.05 else 'pas modifié'}** la structure globale de rendement.
+                    """)
+
+                with col_graph:
+                    fig_ks = px.ecdf(df_final, x="rdt", color="grp", 
+                                   title="Comparaison des Probabilités Cumulées (K-S)",
+                                   color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'})
+                    st.plotly_chart(fig_ks, use_container_width=True)
+
+                # --- TABLEAU ANNEXE ---
+                with st.expander("📊 Tableau des tests détaillés (Annexe MFE)"):
+                    st.table(pd.DataFrame({
+                        "Indicateur": ["Normalité (Shapiro)", "Homogénéité (Levene)", "Comparaison (P-value)", "Structure (K-S)", "Taille d'effet (D)"],
+                        "Valeur brute": [p_shapiro, p_levene, p_val, p_ks, d_cohen],
+                        "Seuil / Statut": ["> 0.05", "> 0.05", "< 0.05", "< 0.05", d_desc]
+                    }))
             else:
-                st.error("Données insuffisantes pour l'analyse expert.")
-
+                st.error("❌ Données insuffisantes pour l'expertise détaillée.")
     except Exception as e:
         st.error(f"❌ Erreur générale : {e}")
