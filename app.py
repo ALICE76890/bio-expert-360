@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import geopandas as gpd
 import plotly.express as px
+import plotly.graph_objects as go
 from scipy import stats
 import io
 import zipfile
@@ -10,7 +11,7 @@ import numpy as np
 import shutil
 from datetime import datetime
 
-# --- 1. CONFIGURATION ---
+# --- 1. CONFIGURATION PAGE ---
 st.set_page_config(page_title="Bio-Expert 360", layout="wide", page_icon="🌱")
 
 def clear_temp():
@@ -18,18 +19,32 @@ def clear_temp():
         shutil.rmtree("temp")
     os.makedirs("temp")
 
-# --- 2. SIDEBAR ---
+# --- 2. RÉFÉRENTIEL ARVALIS ---
+PARAM_CULTURES = {
+    "Blé Tendre": {"echaudage": 25, "critique": 30, "base_t": 0},
+    "Maïs": {"echaudage": 35, "critique": 38, "base_t": 6},
+    "Orge": {"echaudage": 25, "critique": 30, "base_t": 0}
+}
+
+# --- 3. SIDEBAR ---
 with st.sidebar:
     st.title("🌱 Bio-Expert 360")
-    uploaded_file = st.file_uploader("Fichier QGIS (.zip)", type=["zip"])
     
-    with st.expander("🌾 CONFIGURATION", expanded=True):
-        culture = st.selectbox("Culture", ["Blé Tendre", "Maïs", "Orge"])
-        clean_outliers = st.checkbox("Nettoyage IQR Strict (1.2)", value=True)
-        prix_vente = st.number_input("Prix (€/T)", value=210)
-        cout_prod = st.number_input("Coût (€/ha)", value=45)
+    with st.expander("📥 IMPORTATION DONNÉES", expanded=True):
+        uploaded_file = st.file_uploader("Fichier QGIS (.zip)", type=["zip"])
+    
+    with st.expander("🌾 CONFIGURATION ESSAI", expanded=True):
+        culture = st.selectbox("Culture", list(PARAM_CULTURES.keys()))
+        d_semis = st.date_input("Date de Semis", datetime(2024, 10, 20))
+        d_appli = st.date_input("Date d'Application", datetime(2025, 3, 10))
+        d_recolte = st.date_input("Date de Récolte", datetime(2025, 7, 15))
+        clean_outliers = st.checkbox("Nettoyage strict (IQR 1.2)", value=True)
 
-# --- 3. LOGIQUE PRINCIPALE ---
+    with st.expander("💰 ÉCONOMIE", expanded=True):
+        prix_vente = st.number_input("Prix de vente (€/T)", value=210)
+        cout_prod = st.number_input("Coût Produit (€/ha)", value=45)
+
+# --- 4. TRAITEMENT DU FICHIER ---
 if uploaded_file:
     try:
         clear_temp()
@@ -38,32 +53,37 @@ if uploaded_file:
         
         shp_files = [f for f in os.listdir("temp") if f.endswith('.shp')]
         if not shp_files:
-            st.error("Fichier .shp manquant.")
+            st.error("❌ Aucun fichier .shp trouvé.")
             st.stop()
             
         gdf = gpd.read_file(os.path.join("temp", shp_files[0])).to_crs(epsg=4326)
         df = pd.DataFrame(gdf.drop(columns='geometry'))
         df.columns = df.columns.str.lower()
-
-        # Choix du niveau d'analyse
-        with st.sidebar:
-            mode_analyse = st.radio("Niveau d'analyse", ["Global", "Par Potentiel"])
-            pot_cible = "Tous"
-            if mode_analyse == "Par Potentiel" and 'potentiel' in df.columns:
-                liste_pot = sorted(list(df['potentiel'].unique()))
-                pot_cible = st.selectbox("Choisir Potentiel", liste_pot)
-            
-            val_p = st.selectbox("Bande 'Produit' ?", df['bande'].unique())
-
-        # Création des groupes
-        df['grp'] = df['bande'].apply(lambda x: 'Produit' if x == val_p else 'Témoin')
         
-        # Filtrage
+        # --- LOGIQUE D'ANALYSE DYNAMIQUE ---
+        with st.sidebar:
+            with st.expander("🔬 NIVEAU D'ANALYSE", expanded=True):
+                mode_analyse = st.radio("Type d'affichage", ["Global par Bande", "Détaillé par Potentiel"])
+                pot_cible = "Tous"
+                if mode_analyse == "Détaillé par Potentiel":
+                    if 'potentiel' in df.columns:
+                        liste_pot = ["Tous"] + sorted(list(df['potentiel'].unique()))
+                        pot_cible = st.selectbox("Sélectionner le Potentiel", liste_pot)
+                    else:
+                        st.warning("⚠️ Colonne 'potentiel' manquante.")
+                        mode_analyse = "Global par Bande"
+
+        # Groupement
+        val_p = st.sidebar.selectbox("Bande 'Produit' ?", df['bande'].unique())
+        df['grp'] = df['bande'].apply(lambda x: 'Produit' if x == val_p else 'Témoin')
+
         df_travail = df.copy()
-        if mode_analyse == "Par Potentiel" and pot_cible != "Tous":
+        if mode_analyse == "Détaillé par Potentiel" and pot_cible != "Tous":
             df_travail = df[df['potentiel'] == pot_cible]
 
-        # Nettoyage IQR 1.2
+        n_initial = len(df_travail)
+
+        # --- NETTOYAGE IQR SÉVÈRE ---
         if clean_outliers:
             clean_list = []
             for g in ['Produit', 'Témoin']:
@@ -73,69 +93,100 @@ if uploaded_file:
                     iqr = q3 - q1
                     sub = sub[(sub['rdt'] >= q1 - 1.2*iqr) & (sub['rdt'] <= q3 + 1.2*iqr)]
                     clean_list.append(sub)
-            df_final = pd.concat(clean_list)
+            df_final = pd.concat(clean_list) if clean_list else df_travail.copy()
         else:
             df_final = df_travail.copy()
 
-        # Effectifs (N)
+        # Effectifs par bande
         data_p = df_final[df_final['grp'] == 'Produit']['rdt'].dropna()
         data_t = df_final[df_final['grp'] == 'Témoin']['rdt'].dropna()
         n_p, n_t = len(data_p), len(data_t)
+        gain = data_p.mean() - data_t.mean() if n_p > 0 and n_t > 0 else 0
 
-        # Affichage
-        st.subheader(f"Analyse : {mode_analyse} ({pot_cible})")
-        
+        # --- CALCULS STATS DÉTAILLÉS ---
+        if n_p > 3 and n_t > 3:
+            _, p_shapiro = stats.shapiro(data_p)
+            _, p_levene = stats.levene(data_p, data_t)
+            ks_stat, p_ks = stats.ks_2samp(data_p, data_t)
+            
+            # Sélection du test
+            if p_shapiro > 0.05 and p_levene > 0.05:
+                test_nom, p_val = "Student", stats.ttest_ind(data_p, data_t)[1]
+                test_id = "PARAM"
+            else:
+                test_nom, p_val = "Mann-Whitney", stats.mannwhitneyu(data_p, data_t)[1]
+                test_id = "NON_PARAM"
+
+            # --- SIDEBAR : GLOSSAIRE DYNAMIQUE ---
+            with st.sidebar:
+                with st.expander("📖 COMPRENDRE LES TESTS", expanded=False):
+                    st.write(f"**Test actuel : {test_nom}**")
+                    if test_id == "PARAM":
+                        st.info("On utilise **Student** car vos données sont 'normales' (en cloche) et stables. C'est le test le plus puissant.")
+                    else:
+                        st.warning("On utilise **Mann-Whitney** car vos données présentent des anomalies ou une forte asymétrie. Ce test est plus sûr ici.")
+                    
+                    st.write("---")
+                    st.write("**Shapiro-Wilk** : Vérifie si vos rendements suivent une distribution naturelle.")
+                    st.write("**Levene** : Vérifie si la variabilité est la même dans les deux bandes.")
+                    st.write("**K-S** : Regarde si toute la 'forme' de votre rendement a changé avec le produit.")
+
+        # --- AFFICHAGE KPIs ---
+        st.markdown(f"### 📈 Synthèse de Performance ({mode_analyse})")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("N Produit", f"{n_p} pts")
+        c2.metric("N Témoin", f"{n_t} pts")
+        c3.metric("Gain Moyen", f"+{round(gain, 2)} qtx")
+        c4.metric("Marge Nette", f"{round(((gain/10)*prix_vente)-cout_prod, 1)} €/ha")
+
+        # --- ONGLETS ---
         tab_rdt, tab_stats = st.tabs(["📊 Rendement", "🔬 Stat Expert"])
 
         with tab_rdt:
-            st.plotly_chart(px.box(df_final, x="grp", y="rdt", color="grp", points="all", notched=True), use_container_width=True)
+            st.subheader("📊 Distribution des rendements")
+            fig_rdt = px.box(df_final, x="grp", y="rdt", color="grp", points="all", notched=True,
+                           color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'})
+            st.plotly_chart(fig_rdt, use_container_width=True)
 
         with tab_stats:
+            st.header("🔬 Expertise Statistique Avancée")
             if n_p > 3 and n_t > 3:
-                # 1. DIAGNOSTICS RÉELS
-                _, p_sha = stats.shapiro(data_p)
-                _, p_lev = stats.levene(data_p, data_t)
+                # Calcul D de Cohen
+                std_p, std_t = data_p.std(), data_t.std()
+                pooled_std = np.sqrt(((n_p - 1) * std_p**2 + (n_t - 1) * std_t**2) / (n_p + n_t - 2))
+                d_cohen = (data_p.mean() - data_t.mean()) / pooled_std
                 
-                # 2. ARBRE DE DÉCISION
-                if p_sha > 0.05 and p_lev > 0.05:
-                    test_nom, p_val = "Student (T-test)", stats.ttest_ind(data_p, data_t)[1]
-                    raison = "Données normales et stables : Student est le plus précis."
-                else:
-                    test_nom = "Mann-Whitney (U-test)"
-                    p_val = stats.mannwhitneyu(data_p, data_t)[1]
-                    raison = "Données atypiques ou instables : Mann-Whitney est plus fiable."
-
-                # 3. RÉGRESSION ET R²
-                slope, intercept, r_val, p_reg, std_err = stats.linregress(range(len(data_p)), data_p)
-                r2 = r_val**2
-
-                # 4. AFFICHAGE DÉTAILLÉ
-                st.write(f"### 🛡️ Audit Statistique ({test_nom})")
-                st.info(f"**Pourquoi ce test ?** {raison}")
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("N (Prd / Tém)", f"{n_p} / {n_t}")
-                c2.metric("Fiabilité (1-p)", f"{round((1-p_val)*100, 2)}%")
-                c3.metric("Qualité Modèle (R²)", round(r2, 3))
+                # Interface Expert
+                st.subheader("1️⃣ Diagnostics de validité")
+                d1, d2, d3 = st.columns(3)
+                d1.write(f"**Normalité** : {'✅' if p_shapiro > 0.05 else '❌'} (p={round(p_shapiro,4)})")
+                d2.write(f"**Homogénéité** : {'✅' if p_levene > 0.05 else '❌'} (p={round(p_levene,4)})")
+                d3.write(f"**Taille de l'effet** : {round(d_cohen, 2)} (Cohen's D)")
 
                 st.markdown("---")
-                st.subheader("📝 Synthèse Agronomique")
+                
+                st.subheader("2️⃣ Verdict Scientifique")
+                p_format = f"{p_val:.4e}" if p_val > 0 else "< 1e-20"
+                
                 if p_val < 0.05:
-                    if r2 < 0.2:
-                        st.warning("⚠️ **Impact réel mais masqué** : Le gain est fiable, mais le sol (faible R²) domine l'essai.")
-                    else:
-                        st.success("✅ **Impact réel et solide** : Le produit explique bien la performance.")
+                    st.success(f"✅ **Impact Significatif** (p={p_format})")
+                    st.write(f"Le test de **{test_nom}** confirme que la différence n'est pas due au hasard.")
                 else:
-                    st.error("❌ **Aucun impact prouvé** : La variabilité naturelle explique les différences.")
+                    st.error(f"❌ **Impact Non Démontré** (p={round(p_val,4)})")
+                    st.write("La variabilité de la parcelle masque l'effet potentiel du produit.")
 
-                with st.expander("🔍 Glossaire des tests effectués"):
-                    st.write("**Shapiro-Wilk** : Test de normalité. On cherche p > 0.05.")
-                    st.write("**Levene** : Test d'homogénéité (stabilité). On cherche p > 0.05.")
-                    st.write("**R²** : Part de variation expliquée par le modèle (0 à 1).")
+                # Courbe ECDF
+                st.plotly_chart(px.ecdf(df_final, x="rdt", color="grp", title="Analyse de structure (K-S)"), use_container_width=True)
+                
+                # Tableau Annexe
+                with st.expander("📝 Détails pour le mémoire"):
+                    st.table(pd.DataFrame({
+                        "Test": ["Shapiro", "Levene", "Comparaison", "Structure (K-S)"],
+                        "P-Value": [p_shapiro, p_levene, p_val, p_ks],
+                        "Rôle": ["Normalité", "Stabilité", "Performance", "Répartition"]
+                    }))
             else:
-                st.error("Pas assez de points pour les stats.")
+                st.error("Données insuffisantes.")
 
     except Exception as e:
-        st.error(f"Erreur : {e}")
-else:
-    st.info("Veuillez charger un fichier ZIP pour démarrer l'analyse.")
+        st.error(f"❌ Erreur générale : {e}")
