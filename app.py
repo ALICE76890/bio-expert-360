@@ -111,10 +111,17 @@ if uploaded_file:
         # --- 5. ONGLETS ---
         tab_rdt, tab_climat, tab_stats = st.tabs(["📊 Rendement", "🌦️ Climat & Stress", "🔬 Stat Expert"])
 
-        with tab_rdt:
-            fig_rdt = px.box(df_final, x="grp", y="rdt", color="grp", points="all",
-                           title="Comparaison des Rendements",
-                           color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'})
+ with tab_rdt:
+            st.subheader(f"📊 Analyse du Rendement : Mode {mode_analyse}")
+            
+            if mode_analyse == "Global par Bande":
+                fig_rdt = px.box(df_final, x="grp", y="rdt", color="grp", points="all", notched=True,
+                               title="Comparaison globale Produit vs Témoin")
+            else:
+                # Affichage par potentiel
+                fig_rdt = px.box(df_final, x="potentiel", y="rdt", color="grp", points="all",
+                               title="Comparaison des performances par zone de potentiel")
+            
             st.plotly_chart(fig_rdt, use_container_width=True)
 
         with tab_climat:
@@ -177,10 +184,62 @@ if uploaded_file:
             except Exception as e:
                 st.error(f"Connexion impossible : {e}")
 
-        with tab_stats:
-            st.header("🔬 Fiabilité Statistique")
-            st.plotly_chart(px.histogram(df_final, x="rdt", color="grp", barmode="overlay"), use_container_width=True)
-            st.write(f"Significativité (alpha=0.05) : **{'OUI' if p_student < 0.05 else 'NON'}**")
+with tab_stats:
+            st.header("🔬 Expertise Statistique Multivariée")
+            
+            # Calcul des CV (Coefficient de Variation)
+            cv_p = (data_p.std() / data_p.mean()) * 100
+            cv_t = (data_t.std() / data_t.mean()) * 100
+            
+            # 1. Test de Normalité (Shapiro-Wilk)
+            _, p_shapiro = stats.shapiro(data_p)
+            
+            # 2. Test d'Homogénéité des variances (Levene)
+            _, p_levene = stats.levene(data_p, data_t)
+            
+            # 3. Batterie de tests de comparaison
+            t_stud, p_stud = stats.ttest_ind(data_p, data_t) # Student classique
+            t_welch, p_welch = stats.ttest_ind(data_p, data_t, equal_var=False) # Welch (si variances diff)
+            u_mann, p_mann = stats.mannwhitneyu(data_p, data_t) # Mann-Whitney (si non normal)
+
+            # --- LOGIQUE DE DÉCISION DU MEILLEUR TEST ---
+            if p_shapiro > 0.05 and p_levene > 0.05:
+                best_test = "Student (Paramétrique)"
+                p_final = p_stud
+                explication = "Les données sont normales et homogènes. Student est le plus puissant ici."
+            elif p_shapiro > 0.05:
+                best_test = "Welch (Robuste)"
+                p_final = p_welch
+                explication = "Données normales mais variances hétérogènes. Welch corrige ce biais."
+            else:
+                best_test = "Mann-Whitney (Non-paramétrique)"
+                p_final = p_mann
+                explication = "Données non-normales. Ce test est le plus fiable pour les distributions atypiques."
+
+            # --- AFFICHAGE ---
+            c1, c2 = st.columns(2)
+            with c1:
+                st.metric("CV Produit", f"{cv_p:.1f}%")
+                st.metric("CV Témoin", f"{cv_t:.1f}%")
+                st.write(f"**Test retenu :** {best_test}")
+                st.info(f"**Pourquoi ?** {explication}")
+
+            with c2:
+                st.write("**Verdict Scientifique :**")
+                if p_final < 0.05:
+                    st.success(f"✅ Résultat Significatif (p={p_final:.4f})")
+                    st.write("La différence de rendement n'est pas due au hasard.")
+                else:
+                    st.warning(f"❌ Résultat Non-Significatif (p={p_final:.4f})")
+                    st.write("La variabilité intra-bande est trop forte pour conclure.")
+
+            st.markdown("---")
+            st.write("### 📊 Détail des calculs pour le mémoire")
+            st.dataframe(pd.DataFrame({
+                "Test": ["Shapiro (Normalité)", "Student", "Welch", "Mann-Whitney"],
+                "P-Value": [p_shapiro, p_stud, p_welch, p_mann],
+                "Interprétation": ["OK si > 0.05", "Classique", "Variances diff", "Distribution libre"]
+            })))
 
     except Exception as e:
         st.error(f"❌ Erreur générale : {e}")
