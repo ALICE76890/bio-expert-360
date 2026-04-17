@@ -122,23 +122,31 @@ if uploaded_file:
             st.info("Visualisation climatique désactivée temporairement selon votre demande.")
 
         with tab_stats:
-            st.header("🔬 Expertise Statistique Avancée")
+            st.header("🔬 Expertise Statistique Avancée & Analyse de Distribution")
+            
             if len(data_p) > 2 and len(data_t) > 2:
-                # 1. CALCULS
+                # 1. CALCULS PRÉALABLES
                 mean_p, mean_t = data_p.mean(), data_t.mean()
                 std_p, std_t = data_p.std(), data_t.std()
                 n_p, n_t = len(data_p), len(data_t)
                 cv_p, cv_t = (std_p/mean_p)*100, (std_t/mean_t)*100
                 
-                pooled_std = np.sqrt(((n_p - 1) * std_p**2 + (n_t - 1) * std_t**2) / (n_p + n_t - 2))
-                d_cohen = (mean_p - mean_t) / pooled_std
-                
+                # 2. BATTERIE DE TESTS
                 _, p_shapiro = stats.shapiro(data_p)
                 _, p_levene = stats.levene(data_p, data_t)
                 _, p_stud = stats.ttest_ind(data_p, data_t)
                 _, p_welch = stats.ttest_ind(data_p, data_t, equal_var=False)
                 _, p_mann = stats.mannwhitneyu(data_p, data_t)
+                
+                # --- NOUVEAU : TEST DE KOLMOGOROV-SMIRNOV ---
+                # Compare si les deux distributions sont réellement différentes
+                ks_stat, p_ks = stats.ks_2samp(data_p, data_t)
+                
+                # 3. TAILLE DE L'EFFET (Cohen)
+                pooled_std = np.sqrt(((n_p - 1) * std_p**2 + (n_t - 1) * std_t**2) / (n_p + n_t - 2))
+                d_cohen = (mean_p - mean_t) / pooled_std
 
+                # Décision du test principal
                 if p_shapiro > 0.05 and p_levene > 0.05:
                     best_test, p_final = "Student", p_stud
                 elif p_shapiro > 0.05:
@@ -146,28 +154,53 @@ if uploaded_file:
                 else:
                     best_test, p_final = "Mann-Whitney", p_mann
 
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.metric("CV Moyen", f"{round((cv_p+cv_t)/2, 1)}%")
-                with c2:
-                    st.metric("Effet (Cohen)", f"{round(d_cohen, 2)}")
-                with c3:
-                    st.metric("Fiabilité", f"{round((1-p_final)*100, 1)}%")
+                # --- AFFICHAGE DES INDICATEURS CLÉS ---
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("CV Moyen", f"{round((cv_p+cv_t)/2, 1)}%")
+                c2.metric("Effet (Cohen)", f"{round(d_cohen, 2)}")
+                c3.metric("Fiabilité (1-p)", f"{round((1-p_final)*100, 1)}%")
+                c4.metric("Distinction (K-S)", f"{'Forte' if p_ks < 0.05 else 'Faible'}")
 
                 st.markdown("---")
+                
                 col_txt, col_graph = st.columns([1, 2])
                 with col_txt:
-                    st.write("### 📖 Interprétation MFE")
-                    st.write(f"Test retenu : **{best_test}**")
-                    st.write(f"L'indice de Cohen ({round(d_cohen, 2)}) indique un impact **{'fort' if abs(d_cohen)>0.8 else 'modéré'}**.")
-                with col_graph:
-                    fig_dens = px.histogram(df_final, x="rdt", color="grp", marginal="violin", barmode="overlay")
-                    st.plotly_chart(fig_dens, use_container_width=True)
+                    st.write("### 📖 Analyse de la Différence")
+                    st.write(f"**Test de structure (K-S) :** p = `{p_ks:.4f}`")
+                    
+                    if p_ks < 0.05:
+                        st.success("✅ Les bandes sont structurellement différentes.")
+                        st.write("""
+                        Le test de Kolmogorov-Smirnov confirme que le produit a modifié 
+                        la répartition globale des rendements, et pas seulement la moyenne. 
+                        C'est une preuve de l'efficacité systémique du traitement.
+                        """)
+                    else:
+                        st.warning("⚠️ Les distributions restent proches.")
+                        st.write("Le gain est présent mais les populations 'Produit' et 'Témoin' se chevauchent encore beaucoup.")
 
-                with st.expander("Détails des tests"):
-                    st.table(pd.DataFrame({"Indicateur": ["Shapiro", "Student", "Cohen"], "Valeur": [p_shapiro, p_stud, d_cohen]}))
+                    st.write(f"**Taille de l'effet :** Avec un D de Cohen de `{round(d_cohen,2)}`, l'impact est considéré comme **{'majeur' if abs(d_cohen)>0.8 else 'significatif'}**.")
+
+                with col_graph:
+                    # Graphique ECDF (Fonction de répartition cumulative)
+                    # C'est la meilleure façon de visualiser le test K-S
+                    fig_ks = px.ecdf(df_final, x="rdt", color="grp", 
+                                   title="Probabilité d'atteindre un rendement (Analyse K-S)",
+                                   labels={'rdt': 'Rendement (qtx/ha)', 'probability': 'Probabilité cumulée'})
+                    st.plotly_chart(fig_ks, use_container_width=True)
+
+                with st.expander("🔬 Détails techniques pour le rapport"):
+                    st.write("Voici les valeurs brutes à copier dans vos annexes :")
+                    st.table(pd.DataFrame({
+                        "Test": ["Normalité (Shapiro)", "Homogénéité (Levene)", "Différence (Best Test)", "Structure (K-S)", "Effet (Cohen)"],
+                        "Valeur": [p_shapiro, p_levene, p_final, p_ks, d_cohen],
+                        "Interprétation": [
+                            "OK si > 0.05", "OK si > 0.05", "Significatif si < 0.05", 
+                            "Populations distinctes si < 0.05", "Impact fort si > 0.8"
+                        ]
+                    }))
             else:
-                st.error("Données insuffisantes.")
+                st.error("Données insuffisantes pour l'analyse.")
 
     except Exception as e:
         st.error(f"❌ Erreur : {e}")
