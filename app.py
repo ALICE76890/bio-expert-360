@@ -65,7 +65,7 @@ if uploaded_file:
             st.error(f"❌ Colonnes manquantes. Trouvées : {list(df.columns)}")
             st.stop()
 
-        # --- LOGIQUE D'ANALYSE (Déplacée ici pour que 'df' existe) ---
+        # --- LOGIQUE D'ANALYSE ---
         with st.sidebar:
             with st.expander("🔬 NIVEAU D'ANALYSE", expanded=True):
                 mode_analyse = st.radio("Type d'affichage", ["Global par Bande", "Détaillé par Potentiel"])
@@ -81,11 +81,9 @@ if uploaded_file:
         val_p = st.sidebar.selectbox("Bande 'Produit' ?", df['bande'].unique())
         df['grp'] = df['bande'].apply(lambda x: 'Produit' if x == val_p else 'Témoin')
 
-        # Filtrage par potentiel si demandé
         if mode_analyse == "Détaillé par Potentiel" and pot_cible != "Tous":
             df = df[df['potentiel'] == pot_cible]
 
-        # Nettoyage IQR
         if clean_outliers:
             clean_list = []
             for g in ['Produit', 'Témoin']:
@@ -101,17 +99,13 @@ if uploaded_file:
 
         data_p = df_final[df_final['grp'] == 'Produit']['rdt'].dropna()
         data_t = df_final[df_final['grp'] == 'Témoin']['rdt'].dropna()
-
-        # Stats de base
         gain = data_p.mean() - data_t.mean()
 
-        # KPIs
         st.markdown(f"### 📈 Analyse des Performances ({mode_analyse})")
         k1, k2, k3 = st.columns(3)
         k1.metric("GAIN RDT", f"+{round(gain, 2)} qtx/ha")
         k3.metric("MARGE NETTE", f"{round(((gain/10)*prix_vente)-cout_prod, 2)} €/ha")
 
-        # --- 5. ONGLETS ---
         tab_rdt, tab_climat, tab_stats = st.tabs(["📊 Rendement", "🌦️ Climat & Stress", "🔬 Stat Expert"])
 
         with tab_rdt:
@@ -125,35 +119,26 @@ if uploaded_file:
             st.plotly_chart(fig_rdt, use_container_width=True)
 
         with tab_climat:
-            st.info("Partie météo active (en attente de vos données)")
-            # ... (Le code météo reste ici tel qu'il était) ...
+            st.info("Visualisation climatique désactivée temporairement selon votre demande.")
 
-       with tab_stats:
+        with tab_stats:
             st.header("🔬 Expertise Statistique Avancée")
-            
             if len(data_p) > 2 and len(data_t) > 2:
-                # 1. CALCULS PRÉALABLES
+                # 1. CALCULS
                 mean_p, mean_t = data_p.mean(), data_t.mean()
                 std_p, std_t = data_p.std(), data_t.std()
                 n_p, n_t = len(data_p), len(data_t)
+                cv_p, cv_t = (std_p/mean_p)*100, (std_t/mean_t)*100
                 
-                # CV (Coefficient de Variation)
-                cv_p = (std_p / mean_p) * 100
-                cv_t = (std_t / mean_t) * 100
-                
-                # 2. TAILLE DE L'EFFET (D de Cohen)
-                # Calcule si l'impact du produit est réellement massif ou négligeable
                 pooled_std = np.sqrt(((n_p - 1) * std_p**2 + (n_t - 1) * std_t**2) / (n_p + n_t - 2))
                 d_cohen = (mean_p - mean_t) / pooled_std
                 
-                # 3. BATTERIE DE TESTS
                 _, p_shapiro = stats.shapiro(data_p)
                 _, p_levene = stats.levene(data_p, data_t)
                 _, p_stud = stats.ttest_ind(data_p, data_t)
                 _, p_welch = stats.ttest_ind(data_p, data_t, equal_var=False)
                 _, p_mann = stats.mannwhitneyu(data_p, data_t)
 
-                # Logique de décision
                 if p_shapiro > 0.05 and p_levene > 0.05:
                     best_test, p_final = "Student", p_stud
                 elif p_shapiro > 0.05:
@@ -161,53 +146,28 @@ if uploaded_file:
                 else:
                     best_test, p_final = "Mann-Whitney", p_mann
 
-                # --- AFFICHAGE EXPERT ---
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    st.metric("CV Moyen (Homogénéité)", f"{round((cv_p+cv_t)/2, 1)}%")
-                    st.caption("Si > 15%, les données sont très bruitées.")
+                    st.metric("CV Moyen", f"{round((cv_p+cv_t)/2, 1)}%")
                 with c2:
-                    st.metric("Taille de l'effet (Cohen)", f"{round(d_cohen, 2)}")
-                    if abs(d_cohen) < 0.2: desc = "Négligeable"
-                    elif abs(d_cohen) < 0.5: desc = "Faible"
-                    elif abs(d_cohen) < 0.8: desc = "Modérée"
-                    else: desc = "Forte"
-                    st.write(f"Impact : **{desc}**")
+                    st.metric("Effet (Cohen)", f"{round(d_cohen, 2)}")
                 with c3:
-                    st.metric("Fiabilité (1-p)", f"{round((1-p_final)*100, 1)}%")
-                    st.write("Seuil visé : > 95%")
+                    st.metric("Fiabilité", f"{round((1-p_final)*100, 1)}%")
 
                 st.markdown("---")
-                
-                # --- VISUALISATION DE LA DÉCISION ---
                 col_txt, col_graph = st.columns([1, 2])
                 with col_txt:
-                    st.write("### 📖 Interprétation pour le jury")
-                    st.write(f"""
-                    Le test retenu est **{best_test}**. 
-                    
-                    * **L'indice de Cohen ({round(d_cohen, 2)})** montre que le produit déplace la moyenne de rendement de {round(d_cohen, 1)} écart-type. 
-                    C'est une preuve de performance bien plus robuste que la simple moyenne.
-                    
-                    * **Le Coefficient de Variation** de {round(cv_p, 1)}% indique la stabilité de votre produit. Plus il est bas, plus le produit est régulier.
-                    """)
-                
+                    st.write("### 📖 Interprétation MFE")
+                    st.write(f"Test retenu : **{best_test}**")
+                    st.write(f"L'indice de Cohen ({round(d_cohen, 2)}) indique un impact **{'fort' if abs(d_cohen)>0.8 else 'modéré'}**.")
                 with col_graph:
-                    # Graphique de densité pour "voir" le gain
-                    fig_dens = px.histogram(df_final, x="rdt", color="grp", marginal="violin", 
-                                          title="Analyse de la distribution des probabilités",
-                                          barmode="overlay", color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'})
+                    fig_dens = px.histogram(df_final, x="rdt", color="grp", marginal="violin", barmode="overlay")
                     st.plotly_chart(fig_dens, use_container_width=True)
 
-                # Tableau complet pour l'annexe du MFE
-                with st.expander("Voir le tableau complet des tests pour les annexes"):
-                    st.table(pd.DataFrame({
-                        "Indicateur": ["Normalité (Shapiro)", "Homogénéité (Levene)", "P-Value Student", "P-Value Welch", "P-Value Mann-Whitney", "D de Cohen"],
-                        "Valeur": [p_shapiro, p_levene, p_stud, p_welch, p_mann, d_cohen],
-                        "Seuil Expert": ["> 0.05", "> 0.05", "< 0.05", "< 0.05", "< 0.05", "> 0.5 (Significatif)"]
-                    }))
+                with st.expander("Détails des tests"):
+                    st.table(pd.DataFrame({"Indicateur": ["Shapiro", "Student", "Cohen"], "Valeur": [p_shapiro, p_stud, d_cohen]}))
             else:
-                st.error("Nombre de points insuffisant pour l'analyse expert.")
+                st.error("Données insuffisantes.")
 
     except Exception as e:
-        st.error(f"❌ Erreur générale : {e}")
+        st.error(f"❌ Erreur : {e}")
