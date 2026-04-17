@@ -128,43 +128,86 @@ if uploaded_file:
             st.info("Partie météo active (en attente de vos données)")
             # ... (Le code météo reste ici tel qu'il était) ...
 
-        with tab_stats:
-            st.header("🔬 Expertise Statistique Multivariée")
+       with tab_stats:
+            st.header("🔬 Expertise Statistique Avancée")
+            
             if len(data_p) > 2 and len(data_t) > 2:
-                cv_p = (data_p.std() / data_p.mean()) * 100
-                cv_t = (data_t.std() / data_t.mean()) * 100
+                # 1. CALCULS PRÉALABLES
+                mean_p, mean_t = data_p.mean(), data_t.mean()
+                std_p, std_t = data_p.std(), data_t.std()
+                n_p, n_t = len(data_p), len(data_t)
                 
+                # CV (Coefficient de Variation)
+                cv_p = (std_p / mean_p) * 100
+                cv_t = (std_t / mean_t) * 100
+                
+                # 2. TAILLE DE L'EFFET (D de Cohen)
+                # Calcule si l'impact du produit est réellement massif ou négligeable
+                pooled_std = np.sqrt(((n_p - 1) * std_p**2 + (n_t - 1) * std_t**2) / (n_p + n_t - 2))
+                d_cohen = (mean_p - mean_t) / pooled_std
+                
+                # 3. BATTERIE DE TESTS
                 _, p_shapiro = stats.shapiro(data_p)
                 _, p_levene = stats.levene(data_p, data_t)
                 _, p_stud = stats.ttest_ind(data_p, data_t)
                 _, p_welch = stats.ttest_ind(data_p, data_t, equal_var=False)
                 _, p_mann = stats.mannwhitneyu(data_p, data_t)
 
+                # Logique de décision
                 if p_shapiro > 0.05 and p_levene > 0.05:
-                    best_test, p_final, explication = "Student", p_stud, "Données normales et homogènes."
+                    best_test, p_final = "Student", p_stud
                 elif p_shapiro > 0.05:
-                    best_test, p_final, explication = "Welch", p_welch, "Variances hétérogènes."
+                    best_test, p_final = "Welch", p_welch
                 else:
-                    best_test, p_final, explication = "Mann-Whitney", p_mann, "Données non-normales."
+                    best_test, p_final = "Mann-Whitney", p_mann
 
-                c1, c2 = st.columns(2)
+                # --- AFFICHAGE EXPERT ---
+                c1, c2, c3 = st.columns(3)
                 with c1:
-                    st.metric("CV Produit", f"{cv_p:.1f}%")
-                    st.metric("CV Témoin", f"{cv_t:.1f}%")
-                    st.write(f"**Test retenu :** {best_test}")
+                    st.metric("CV Moyen (Homogénéité)", f"{round((cv_p+cv_t)/2, 1)}%")
+                    st.caption("Si > 15%, les données sont très bruitées.")
                 with c2:
-                    if p_final < 0.05:
-                        st.success(f"✅ Significatif (p={p_final:.4f})")
-                    else:
-                        st.warning(f"❌ Non-Significatif (p={p_final:.4f})")
+                    st.metric("Taille de l'effet (Cohen)", f"{round(d_cohen, 2)}")
+                    if abs(d_cohen) < 0.2: desc = "Négligeable"
+                    elif abs(d_cohen) < 0.5: desc = "Faible"
+                    elif abs(d_cohen) < 0.8: desc = "Modérée"
+                    else: desc = "Forte"
+                    st.write(f"Impact : **{desc}**")
+                with c3:
+                    st.metric("Fiabilité (1-p)", f"{round((1-p_final)*100, 1)}%")
+                    st.write("Seuil visé : > 95%")
+
+                st.markdown("---")
                 
-                st.write(f"**Analyse :** {explication}")
-                st.table(pd.DataFrame({
-                    "Test": ["Shapiro", "Student", "Welch", "Mann-Whitney"],
-                    "P-Value": [p_shapiro, p_stud, p_welch, p_mann]
-                }))
+                # --- VISUALISATION DE LA DÉCISION ---
+                col_txt, col_graph = st.columns([1, 2])
+                with col_txt:
+                    st.write("### 📖 Interprétation pour le jury")
+                    st.write(f"""
+                    Le test retenu est **{best_test}**. 
+                    
+                    * **L'indice de Cohen ({round(d_cohen, 2)})** montre que le produit déplace la moyenne de rendement de {round(d_cohen, 1)} écart-type. 
+                    C'est une preuve de performance bien plus robuste que la simple moyenne.
+                    
+                    * **Le Coefficient de Variation** de {round(cv_p, 1)}% indique la stabilité de votre produit. Plus il est bas, plus le produit est régulier.
+                    """)
+                
+                with col_graph:
+                    # Graphique de densité pour "voir" le gain
+                    fig_dens = px.histogram(df_final, x="rdt", color="grp", marginal="violin", 
+                                          title="Analyse de la distribution des probabilités",
+                                          barmode="overlay", color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'})
+                    st.plotly_chart(fig_dens, use_container_width=True)
+
+                # Tableau complet pour l'annexe du MFE
+                with st.expander("Voir le tableau complet des tests pour les annexes"):
+                    st.table(pd.DataFrame({
+                        "Indicateur": ["Normalité (Shapiro)", "Homogénéité (Levene)", "P-Value Student", "P-Value Welch", "P-Value Mann-Whitney", "D de Cohen"],
+                        "Valeur": [p_shapiro, p_levene, p_stud, p_welch, p_mann, d_cohen],
+                        "Seuil Expert": ["> 0.05", "> 0.05", "< 0.05", "< 0.05", "< 0.05", "> 0.5 (Significatif)"]
+                    }))
             else:
-                st.error("Pas assez de données pour les tests statistiques.")
+                st.error("Nombre de points insuffisant pour l'analyse expert.")
 
     except Exception as e:
         st.error(f"❌ Erreur générale : {e}")
