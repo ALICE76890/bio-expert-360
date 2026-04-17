@@ -128,69 +128,99 @@ if uploaded_file:
         with tab_climat:
             st.info("Visualisation climatique désactivée (Mode Focus Données).")
 
-        with tab_stats:
-            st.header(f"🔬 Expertise Statistique Fine : {pot_cible}")
+     with tab_stats:
+            st.header(f"🔬 Rapport d'Expertise Statistique : {pot_cible}")
             
-            if len(data_p) > 2 and len(data_t) > 2:
-                # Calculs
+            if len(data_p) > 3 and len(data_t) > 3:
+                # --- 1. CALCULS PRÉALABLES ---
                 n_p, n_t = len(data_p), len(data_t)
-                cv_p, cv_t = (data_p.std()/data_p.mean())*100, (data_t.std()/data_t.mean())*100
+                mean_p, mean_t = data_p.mean(), data_t.mean()
+                std_p, std_t = data_p.std(), data_t.std()
+                cv_p, cv_t = (std_p/mean_p)*100, (std_t/mean_t)*100
                 
-                # Tests
-                _, p_shapiro = stats.shapiro(data_p)
-                _, p_levene = stats.levene(data_p, data_t)
-                _, p_stud = stats.ttest_ind(data_p, data_t)
-                _, p_welch = stats.ttest_ind(data_p, data_t, equal_var=False)
-                _, p_mann = stats.mannwhitneyu(data_p, data_t)
-                ks_stat, p_ks = stats.ks_2samp(data_p, data_t)
-
-                # Cohen's D
-                pooled_std = np.sqrt(((n_p - 1) * data_p.std()**2 + (n_t - 1) * data_t.std()**2) / (n_p + n_t - 2))
-                d_cohen = (data_p.mean() - data_t.mean()) / pooled_std
-
-                # Sélection du test
+                # --- 2. TESTS DE DIAGNOSTIC ---
+                # Test de Normalité (Shapiro-Wilk)
+                stat_sha, p_shapiro = stats.shapiro(data_p)
+                # Test d'Homogénéité (Levene)
+                stat_lev, p_levene = stats.levene(data_p, data_t)
+                
+                # --- 3. SÉLECTION DU TEST DE COMPARAISON ---
                 if p_shapiro > 0.05 and p_levene > 0.05:
-                    best_test, p_final = "Student", p_stud
+                    test_nom, p_val = "Student (T-test)", stats.ttest_ind(data_p, data_t)[1]
+                    test_desc = "Vos données suivent une loi normale et ont des variances égales. C'est le scénario idéal pour la puissance statistique."
                 elif p_shapiro > 0.05:
-                    best_test, p_final = "Welch", p_welch
+                    test_nom, p_val = "Welch (T-test)", stats.ttest_ind(data_p, data_t, equal_var=False)[1]
+                    test_desc = "Les données sont normales mais les dispersions diffèrent. Welch ajuste les degrés de liberté pour rester précis."
                 else:
-                    best_test, p_final = "Mann-Whitney", p_mann
+                    test_nom, p_val = "Mann-Whitney (U-test)", stats.mannwhitneyu(data_p, data_t)[1]
+                    test_desc = "La distribution n'est pas normale (asymétrie). On utilise un test de rangs, plus robuste aux valeurs extrêmes."
 
-                # Affichage des KPIs Stats
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("CV Moyen", f"{round((cv_p+cv_t)/2, 1)}%")
-                c2.metric("Effet (Cohen)", f"{round(d_cohen, 2)}")
-                c3.metric("Fiabilité (1-p)", f"{round((1-p_final)*100, 1)}%")
-                c4.metric("Distinction (K-S)", f"{'Forte' if p_ks < 0.05 else 'Faible'}")
+                # --- 4. TESTS DE STRUCTURE ET D'EFFET ---
+                ks_stat, p_ks = stats.ks_2samp(data_p, data_t)
+                pooled_std = np.sqrt(((n_p - 1) * std_p**2 + (n_t - 1) * std_t**2) / (n_p + n_t - 2))
+                d_cohen = (mean_p - mean_t) / pooled_std
+
+                # --- AFFICHAGE DES RÉSULTATS (KPIs) ---
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Fiabilité Scientifique", f"{round((1-p_val)*100, 2)}%", help="Plus ce chiffre est proche de 100%, moins le gain est dû au hasard.")
+                c2.metric("Taille de l'effet (Cohen)", round(d_cohen, 2), help="Indique la force brute du produit au-delà de la moyenne.")
+                c3.metric("Stabilité (CV)", f"{round((cv_p+cv_t)/2, 1)}%", help="Indique si le rendement est régulier ou très hétérogène.")
 
                 st.markdown("---")
+
+                # --- SECTION EXPLICATIVE DÉTAILLÉE ---
+                col_expli, col_viz = st.columns([1, 1.5])
                 
-                col_txt, col_graph = st.columns([1, 2])
-                with col_txt:
-                    st.write("### 📖 Analyse de la Différence")
-                    st.write(f"**Zone analysée :** {pot_cible}")
-                    st.write(f"**Test retenu :** {best_test}")
+                with col_expli:
+                    st.subheader("📖 Interprétation des Tests")
                     
-                    if p_ks < 0.05:
-                        st.success("✅ Distributions structurellement différentes.")
-                    else:
-                        st.warning("⚠️ Distributions similaires (chevauchement).")
-                        
-                    st.write(f"**Interprétation MFE :** Le D de Cohen de `{round(d_cohen,2)}` montre que le produit déplace la performance de la zone de manière **{'majeure' if abs(d_cohen)>0.8 else 'notable'}**.")
+                    # Explication Shapiro
+                    with st.expander("1. Test de Normalité (Shapiro-Wilk)", expanded=(p_shapiro < 0.05)):
+                        st.write(f"**P-Value :** `{round(p_shapiro, 4)}`")
+                        if p_shapiro > 0.05:
+                            st.success("Données Normales : La répartition des rendements est équilibrée (courbe en cloche).")
+                        else:
+                            st.warning("Données Atypiques : La répartition est décalée ou présente des 'queues' de distribution.")
+                    
+                    # Explication Levene
+                    with st.expander("2. Test d'Homogénéité (Levene)"):
+                        st.write(f"**P-Value :** `{round(p_levene, 4)}`")
+                        if p_levene > 0.05:
+                            st.success("Variances égales : Les deux bandes ont la même régularité.")
+                        else:
+                            st.info("Variances inégales : Une bande est plus hétérogène que l'autre.")
 
-                with col_graph:
+                    # Explication K-S
+                    with st.expander("3. Test de Structure (Kolmogorov-Smirnov)"):
+                        st.write(f"**P-Value :** `{round(p_ks, 4)}`")
+                        if p_ks < 0.05:
+                            st.success("Changement de structure : Le produit a modifié la forme de la performance parcellaire.")
+                        else:
+                            st.write("Structure identique : Les courbes de probabilité se chevauchent trop.")
+
+                    st.info(f"💡 **Synthèse pour le MFE :** Le test **{test_nom}** a été retenu. {test_desc}")
+
+                with col_viz:
+                    st.subheader("📊 Visualisation de la Probabilité")
                     fig_ks = px.ecdf(df_final, x="rdt", color="grp", 
-                                   title=f"Courbe de probabilité cumulée (Zone {pot_cible})",
-                                   labels={'rdt': 'Rendement (qtx/ha)', 'probability': 'Probabilité'})
+                                   title="Comparaison des fonctions de répartition (K-S)",
+                                   labels={'rdt': 'Rendement (qtx/ha)', 'probability': 'Cumul de probabilité'})
                     st.plotly_chart(fig_ks, use_container_width=True)
+                    st.caption("Plus l'écart horizontal entre les courbes est grand, plus le test K-S est significatif.")
 
-                with st.expander("🔬 Détails techniques"):
-                    st.table(pd.DataFrame({
-                        "Indicateur": ["Normalité", "Homogénéité", "P-Value Test", "K-S Stat", "Cohen D"],
-                        "Valeur": [p_shapiro, p_levene, p_final, p_ks, d_cohen]
-                    }))
+                # --- TABLEAU RÉCAPITULATIF POUR ANNEXES ---
+                st.markdown("### 📋 Tableau récapitulatif pour les annexes")
+                df_annexe = pd.DataFrame({
+                    "Analyse": ["Normalité", "Homogénéité", "Comparaison Moyennes", "Changement Structure", "Force de l'Impact"],
+                    "Outil utilisé": ["Shapiro-Wilk", "Levene", test_nom, "Kolmogorov-Smirnov", "D de Cohen"],
+                    "Valeur (p)": [f"{p_shapiro:.4f}", f"{p_levene:.4f}", f"{p_val:.4f}", f"{p_ks:.4f}", f"D = {d_cohen:.2f}"],
+                    "Significatif ?": ["Oui" if p_shapiro < 0.05 else "Non", "Oui" if p_levene < 0.05 else "Non", 
+                                       "OUI ✅" if p_val < 0.05 else "NON", "OUI ✅" if p_ks < 0.05 else "NON",
+                                       "Fort Impact" if abs(d_cohen) > 0.8 else "Impact Modéré"]
+                })
+                st.table(df_annexe)
             else:
-                st.error("Données insuffisantes pour cette zone spécifique.")
+                st.error("❌ Données insuffisantes pour générer l'expertise statistique.")
 
     except Exception as e:
         st.error(f"❌ Erreur générale : {e}")
