@@ -13,7 +13,7 @@ import numpy as np
 import shutil
 
 # --- CONFIGURATION PAGE ---
-st.set_page_config(page_title="Bio-Expert 360 Pro", layout="wide", page_icon="🌱")
+st.set_page_config(page_title="Analyse Expert", layout="wide", page_icon="🌱")
 
 # --- FONCTION DE NETTOYAGE ---
 def clear_temp():
@@ -45,6 +45,12 @@ with st.sidebar:
     with st.expander("💰 ÉCONOMIE", expanded=True):
         prix_vente = st.number_input("Prix de vente (€/T)", value=210)
         cout_prod = st.number_input("Coût Produit (€/ha)", value=45)
+        
+  with st.expander("🌾 CONFIGURATION ESSAI", expanded=True):
+        culture = st.selectbox("Culture", list(PARAM_CULTURES.keys()))
+        d_semis = st.date_input("Date de Semis", datetime(2024, 10, 20))
+        d_appli = st.date_input("Date d'Application", datetime(2025, 3, 10))
+        d_recolte = st.date_input("Date de Récolte", datetime(2025, 7, 15)) # Nouvelle variable
 
 # --- TRAITEMENT PRINCIPAL ---
 if uploaded_file:
@@ -107,13 +113,66 @@ if uploaded_file:
         with tab_rdt:
             st.plotly_chart(px.box(df_final, x="grp", y="rdt", color="grp", points="all", title="Répartition du Rendement"), use_container_width=True)
 
-        with tab_climat:
-            st.subheader("🌦️ Analyse Climatique (Open-Meteo)")
+       with tab_climat:
+            st.subheader(f"🌦️ Suivi Climatique : Cycle du {culture}")
             lat, lon = gdf.geometry.y.mean(), gdf.geometry.x.mean()
-            d_start = d_semis.strftime("%Y-%m-%d")
-            d_end = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
             
-            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={d_start}&end_date={d_end}&daily=temperature_2m_max,precipitation_sum&timezone=auto"
+            # Dates au format API
+            start_str = d_semis.strftime("%Y-%m-%d")
+            # On prend la date de récolte (ou aujourd'hui si la récolte est dans le futur)
+            end_limit = min(d_recolte, datetime.now().date() - timedelta(days=2))
+            end_str = end_limit.strftime("%Y-%m-%d")
+            
+            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={start_str}&end_date={end_str}&daily=temperature_2m_max,precipitation_sum&timezone=auto"
+            
+            try:
+                r = requests.get(url).json()
+                if 'daily' in r:
+                    w_df = pd.DataFrame(r['daily'])
+                    w_df['time'] = pd.to_datetime(w_df['time'])
+                    p_c = PARAM_CULTURES[culture]
+                    
+                    # Détection des jours de stress Arvalis
+                    w_df['stress'] = w_df['temperature_2m_max'] >= p_c['max']
+                    
+                    fig_w = go.Figure()
+
+                    # 1. Précipitations
+                    fig_w.add_trace(go.Bar(x=w_df['time'], y=w_df['precipitation_sum'], 
+                                         name="Pluie (mm)", marker_color='rgba(0, 0, 255, 0.3)'))
+                    
+                    # 2. Température Max
+                    fig_w.add_trace(go.Scatter(x=w_df['time'], y=w_df['temperature_2m_max'], 
+                                             name="T° Max (°C)", line=dict(color='red', width=2)))
+                    
+                    # 3. Ligne de seuil de stress (Arvalis)
+                    fig_w.add_hline(y=p_c['max'], line_dash="dot", line_color="orange", 
+                                   annotation_text=f"Seuil Stress {culture} ({p_c['max']}°C)")
+
+                    # 4. Marquage des événements clés
+                    # Date d'application
+                    fig_w.add_vline(x=pd.to_datetime(d_appli), line_width=3, line_dash="dash", line_color="green")
+                    fig_w.add_annotation(x=pd.to_datetime(d_appli), y=w_df['temperature_2m_max'].max(),
+                                        text="APPLI PRODUIT", showarrow=True, arrowhead=1, bgcolor="green", font=dict(color="white"))
+
+                    # Zone d'action du produit (de l'application à la récolte)
+                    fig_w.add_vrect(x0=pd.to_datetime(d_appli), x1=pd.to_datetime(d_recolte), 
+                                   fillcolor="rgba(0, 255, 0, 0.1)", layer="below", line_width=0,
+                                   annotation_text="Période d'efficacité", annotation_position="top left")
+
+                    fig_w.update_layout(title=f"Climat du semis au retrait de la culture",
+                                      xaxis_title="Cycle de culture",
+                                      yaxis_title="Valeurs",
+                                      hovermode="x unified")
+                    
+                    st.plotly_chart(fig_w, use_container_width=True)
+                    
+                    # Résumé Expert
+                    nb_jours_stress = w_df[w_df['time'] >= pd.to_datetime(d_appli)]['stress'].sum()
+                    st.info(f"💡 **Analyse Expert :** Depuis l'application du produit, la culture a subi **{nb_jours_stress} jours** de stress thermique (>{p_c['max']}°C).")
+            
+            except Exception as e:
+                st.error(f"Impossible de charger les données météo : {e}")
             
             r = requests.get(url).json()
             if 'daily' in r:
