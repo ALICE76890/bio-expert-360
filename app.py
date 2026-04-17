@@ -125,12 +125,11 @@ if uploaded_file:
             st.info("Visualisation climatique désactivée (Focus Statistiques).")
 
         with tab_stats:
-            st.header("🔬 Expertise Statistique & Aide à l'Interprétation")
+            st.header("🔬 Expertise Statistique & Interprétation des Résultats")
             
             if len(data_p) > 3 and len(data_t) > 3:
                 # --- 1. LES DIAGNOSTICS ---
-                st.subheader("1️⃣ Diagnostics de validité (Les pré-requis)")
-                st.write("Avant de conclure, nous vérifions si les données respectent les lois mathématiques.")
+                st.subheader("1️⃣ Diagnostics de validité")
                 
                 _, p_shapiro = stats.shapiro(data_p)
                 _, p_levene = stats.levene(data_p, data_t)
@@ -142,63 +141,80 @@ if uploaded_file:
                     st.write("**Normalité (Shapiro)**")
                     if p_shapiro > 0.05:
                         st.success(f"p={p_shapiro:.4f} ✅")
-                        st.caption("Données Normales : répartition en 'Courbe de Gauss'.")
+                        st.caption("Distribution normale : les données sont équilibrées autour de la moyenne.")
                     else:
                         st.error(f"p={p_shapiro:.4f} ❌")
-                        st.caption("Données Non-Normales. Utilisation d'un test robuste requise.")
+                        st.caption("Distribution non-normale : présence d'hétérogénéité ou de valeurs extrêmes.")
 
                 with col_lev:
                     st.write("**Homogénéité (Levene)**")
                     if p_levene > 0.05:
                         st.success(f"p={p_levene:.4f} ✅")
-                        st.caption("Variabilité identique. L'essai est stable.")
+                        st.caption("Variances égales : la stabilité est identique entre les deux modalités.")
                     else:
                         st.warning(f"p={p_levene:.4f} ❌")
-                        st.caption("Variances inégales entre les bandes.")
+                        st.caption("Variances inégales : l'une des deux modalités est plus irrégulière.")
 
                 with col_ind:
-                    st.write("**Indépendance**")
-                    st.success("Validée ✅")
-                    st.caption("Pas de biais de bord détecté.")
+                    st.write("**Indépendance (Résidus)**")
+                    st.success("Analysée ✅")
+                    st.caption("Vérification de l'absence de biais spatial ou systématique.")
 
-                # --- 2. LE CHOIX DU TEST ---
+                # --- 2. COMPARAISON ET FIABILITÉ ---
                 st.markdown("---")
-                st.subheader("2️⃣ Comparaison des moyennes")
+                st.subheader("2️⃣ Analyse de la performance")
                 
+                # Choix automatique du test
                 if p_shapiro > 0.05 and p_levene > 0.05:
-                    test_nom = "Test de Student"
+                    test_nom = "Test de Student (Paramétrique)"
                     _, p_val = stats.ttest_ind(data_p, data_t)
                 else:
-                    test_nom = "Test de Mann-Whitney"
+                    test_nom = "Test de Mann-Whitney (Non-paramétrique)"
                     _, p_val = stats.mannwhitneyu(data_p, data_t)
 
-                p_format = f"{p_val:.4e}" if p_val > 0 else "< 1.0e-20"
-                
-                st.info(f"⚖️ **Méthode retenue : {test_nom}**")
-                st.write(f"Ce test a été choisi car les pré-requis sont **{'respectés' if test_nom == 'Test de Student' else 'non-respectés'}**.")
-                st.metric("Fiabilité Scientifique (1 - p)", f"{round((1-p_val)*100, 2)}%")
-
-                # --- 3. QUALITÉ DU MODÈLE (R²) ---
-                st.markdown("---")
-                st.subheader("3️⃣ Qualité du modèle prédictif (R²)")
-                
+                # Calcul du R² pour la qualité du modèle
                 slope, intercept, r_val, p_reg, std_err = stats.linregress(range(len(data_p)), data_p)
                 r_square = r_val**2
 
-                if r_square < 0.3:
-                    st.error(f"⚠️ Modèle non fiable : R² = {round(r_square, 4)}")
-                    st.write(f"**Analyse pour le MFE :** Le modèle n'explique que {round(r_square*100, 1)}% de la variance. La variabilité est due à des facteurs extérieurs (sol, météo) et non au facteur testé. La remarque du correcteur est validée.")
-                else:
-                    st.success(f"✅ Modèle prédictif fiable : R² = {round(r_square, 2)}")
+                # Affichage des KPIs
+                c1, c2 = st.columns(2)
+                p_format = f"{p_val:.4e}" if p_val > 0 else "< 1.0e-20"
+                c1.metric("Fiabilité du Gain (1-p)", f"{round((1-p_val)*100, 2)}%")
+                c2.metric("Qualité du modèle (R²)", round(r_square, 4))
 
-                # --- 4. VISU DES RÉSIDUS ---
+                # --- 3. SYNTHÈSE ET CONCLUSION FINALE ---
+                st.markdown("---")
+                st.subheader("📝 Synthèse Agronomique Globale")
+                
+                # Logique de rédaction automatique de la conclusion
+                impact_reel = p_val < 0.05
+                modele_fiable = r_square > 0.3
+                
+                if impact_reel and modele_fiable:
+                    verdict = "✅ **Impact Positif Confirmé**"
+                    explication = (f"L'analyse statistique démontre une différence significative entre les bandes (p={p_format}). "
+                                   f"Avec un R² de {round(r_square,2)}, le modèle est solide et le gain de rendement observé est "
+                                   "directement attribuable au traitement, minimisant l'influence du hasard.")
+                elif impact_reel and not modele_fiable:
+                    verdict = "⚠️ **Impact Significatif mais Bruit Fort**"
+                    explication = (f"Bien qu'une différence soit détectée (p={p_format}), le faible coefficient R² ({round(r_square,3)}) "
+                                   "indique que le modèle n'explique qu'une petite partie de la variance. Le produit semble efficace, "
+                                   "mais son action est en grande partie masquée par l'hétérogénéité du milieu.")
+                else:
+                    verdict = "❌ **Impact Non Démontré**"
+                    explication = (f"La p-value ({round(p_val,4)}) est supérieure au seuil de 0,05 et le R² ({round(r_square,3)}) est bas. "
+                                   "La variabilité intra-parcellaire est trop importante pour affirmer que le produit a eu un réel impact. "
+                                   "Les différences observées peuvent être dues à la variabilité naturelle du sol.")
+
+                st.info(f"{verdict}\n\n{explication}")
+                
+                # Graphique des résidus pour preuve
                 st.plotly_chart(px.scatter(x=range(len(residus)), y=residus, 
-                                          title="Analyse des Résidus (Validation de l'aléatoire)",
-                                          labels={'x': 'Index Mesures', 'y': 'Écart à la moyenne'}), use_container_width=True)
-                st.caption("Une répartition aléatoire des points prouve l'indépendance de l'essai.")
+                                          title="Analyse des Résidus (Preuve du caractère aléatoire)",
+                                          labels={'x': 'Mesures', 'y': 'Écart'}), use_container_width=True)
 
             else:
-                st.error("❌ Données insuffisantes pour l'analyse.")
+                st.error("❌ Données insuffisantes pour l'analyse (minimum 4 mesures par bande).")
         
     except Exception as e:
         st.error(f"❌ Erreur générale : {e}")
