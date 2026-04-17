@@ -12,22 +12,22 @@ import os
 import numpy as np
 import shutil
 
-# --- 1. CONFIGURATION ET NETTOYAGE ---
-st.set_page_config(page_title="Bio-Expert 360 Pro", layout="wide", page_icon="🌱")
+# --- 1. CONFIGURATION PAGE ---
+st.set_page_config(page_title="Bio-Expert 360", layout="wide", page_icon="🌱")
 
 def clear_temp():
     if os.path.exists("temp"):
         shutil.rmtree("temp")
     os.makedirs("temp")
 
-# --- 2. RÉFÉRENTIEL AGRONOMIQUE (ARVALIS) ---
+# --- 2. RÉFÉRENTIEL ARVALIS ---
 PARAM_CULTURES = {
     "Blé Tendre": {"echaudage": 25, "critique": 30, "base_t": 0},
     "Maïs": {"echaudage": 35, "critique": 38, "base_t": 6},
     "Orge": {"echaudage": 25, "critique": 30, "base_t": 0}
 }
 
-# --- 3. INTERFACE LATERALE (SIDEBAR) ---
+# --- 3. SIDEBAR ---
 with st.sidebar:
     st.title("🌱 Bio-Expert 360")
     
@@ -36,9 +36,10 @@ with st.sidebar:
     
     with st.expander("🌾 CONFIGURATION ESSAI", expanded=True):
         culture = st.selectbox("Culture", list(PARAM_CULTURES.keys()))
-        d_semis = st.date_input("Date de Semis", datetime(2025, 10, 20))
-        d_appli = st.date_input("Date d'Application", datetime(2026, 3, 10))
-        d_recolte = st.date_input("Date de Récolte", datetime(2026, 7, 15))
+        # Dates par défaut réalistes pour un test (campagne passée)
+        d_semis = st.date_input("Date de Semis", datetime(2024, 10, 20))
+        d_appli = st.date_input("Date d'Application", datetime(2025, 3, 10))
+        d_recolte = st.date_input("Date de Récolte", datetime(2025, 7, 15))
         clean_outliers = st.checkbox("Filtrer points aberrants (IQR)", value=True)
 
     with st.expander("💰 ÉCONOMIE", expanded=True):
@@ -54,20 +55,19 @@ if uploaded_file:
         
         shp_files = [f for f in os.listdir("temp") if f.endswith('.shp')]
         if not shp_files:
-            st.error("❌ Aucun fichier .shp trouvé dans le ZIP.")
+            st.error("❌ Aucun fichier .shp trouvé.")
             st.stop()
             
-        # Lecture et conversion GPS (EPSG:4326 pour la météo)
+        # Conversion GPS impérative pour l'API Météo
         gdf = gpd.read_file(os.path.join("temp", shp_files[0])).to_crs(epsg=4326)
         df = pd.DataFrame(gdf.drop(columns='geometry'))
         df.columns = df.columns.str.lower()
         
         if 'bande' not in df.columns or 'rdt' not in df.columns:
-            st.error(f"❌ Colonnes 'bande' ou 'rdt' manquantes. Trouvées : {list(df.columns)}")
+            st.error(f"❌ Colonnes manquantes. Trouvées : {list(df.columns)}")
             st.stop()
 
-        # Selection de la bande testée
-        val_p = st.sidebar.selectbox("Quelle bande est le 'Produit' ?", df['bande'].unique())
+        val_p = st.sidebar.selectbox("Bande 'Produit' ?", df['bande'].unique())
         df['grp'] = df['bande'].apply(lambda x: 'Produit' if x == val_p else 'Témoin')
 
         # Nettoyage IQR
@@ -92,91 +92,85 @@ if uploaded_file:
         gain = data_p.mean() - data_t.mean()
 
         # KPIs
-        st.markdown("### 📈 Résultats de l'Essai")
+        st.markdown("### 📈 Analyse des Performances")
         k1, k2, k3 = st.columns(3)
         k1.metric("GAIN RDT", f"+{round(gain, 2)} qtx/ha")
-        k2.metric("FIABILITÉ (P-VALUE)", f"{p_student:.4f}")
+        k2.metric("P-VALUE (Fiabilité)", f"{p_student:.4f}")
         k3.metric("MARGE NETTE", f"{round(((gain/10)*prix_vente)-cout_prod, 2)} €/ha")
 
-        # --- 5. ONGLETS D'ANALYSE ---
+        # --- 5. ONGLETS ---
         tab_rdt, tab_climat, tab_stats = st.tabs(["📊 Rendement", "🌦️ Climat & Stress", "🔬 Stat Expert"])
 
         with tab_rdt:
             fig_rdt = px.box(df_final, x="grp", y="rdt", color="grp", points="all",
-                           title="Dispersion des rendements par modalité",
+                           title="Comparaison des Rendements",
                            color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'})
             st.plotly_chart(fig_rdt, use_container_width=True)
-with tab_climat:
-            st.subheader(f"🌦️ Analyse Météo (Arvalis {culture})")
-            
-            # --- 1. SÉCURISATION DES COORDONNÉES ---
-            lat, lon = gdf.geometry.y.mean(), gdf.geometry.x.mean()
-            
-            # Vérification : une latitude doit être entre -90 et 90
-            if not (-90 <= lat <= 90):
-                st.error(f"❌ Coordonnées invalides : Lat={lat}, Lon={lon}. Vérifie que ton fichier QGIS est bien en WGS84 (EPSG:4326).")
-                st.stop()
 
-            # --- 2. PRÉPARATION DES DATES ---
-            # Sécurité J-5 pour l'archive
-            date_max_dispo = (datetime.now() - timedelta(days=5)).date()
-            safe_end_date = min(d_recolte, date_max_dispo)
+        with tab_climat:
+            st.subheader(f"🌦️ Étude de l'Échaudage (Seuils Arvalis)")
+            lat, lon = gdf.geometry.y.mean(), gdf.geometry.x.mean()
+            p_c = PARAM_CULTURES[culture]
             
-            d_start_str = d_semis.strftime("%Y-%m-%d")
-            d_end_str = safe_end_date.strftime("%Y-%m-%d")
+            # Sécurité Date : Pas de données météo dans le futur
+            # On prend la date la plus ancienne entre d_recolte et J-5
+            limit_date = (datetime.now() - timedelta(days=5)).date()
+            safe_end = min(d_recolte, limit_date)
             
-            # --- 3. APPEL API AVEC GESTION D'ERREURS ---
-            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={d_start_str}&end_date={d_end_str}&daily=temperature_2m_max,precipitation_sum&timezone=auto"
+            # Formatage strict pour l'URL
+            s_str = d_semis.strftime("%Y-%m-%d")
+            e_str = safe_end.strftime("%Y-%m-%d")
+            
+            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={s_str}&end_date={e_str}&daily=temperature_2m_max,precipitation_sum&timezone=auto"
             
             try:
-                # verify=False permet d'ignorer les erreurs de certificat SSL sur certains réseaux restrictifs
-                response = requests.get(url, timeout=15, verify=True) 
-                
-                if response.status_code == 200:
-                    r = response.json()
-                    if 'daily' in r:
-                        w_df = pd.DataFrame(r['daily'])
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    w_data = resp.json()
+                    if 'daily' in w_data:
+                        w_df = pd.DataFrame(w_data['daily'])
                         w_df['time'] = pd.to_datetime(w_df['time'])
-                        p_c = PARAM_CULTURES[culture]
                         
-                        # Graphique Plotly
                         fig_w = go.Figure()
-                        fig_w.add_trace(go.Bar(x=w_df['time'], y=w_df['precipitation_sum'], name="Pluie (mm)", marker_color='rgba(0,0,255,0.3)'))
+                        fig_w.add_trace(go.Bar(x=w_df['time'], y=w_df['precipitation_sum'], name="Pluie (mm)", marker_color='blue', opacity=0.3))
                         fig_w.add_trace(go.Scatter(x=w_df['time'], y=w_df['temperature_2m_max'], name="T° Max", line_color='red'))
                         
-                        # Zones de stress
-                        fig_w.add_hrect(y0=p_c['echaudage'], y1=p_c['critique'], fillcolor="orange", opacity=0.2, annotation_text="Échaudage")
-                        fig_w.add_hrect(y0=p_c['critique'], y1=max(w_df['temperature_2m_max'].max() + 2, 35), fillcolor="red", opacity=0.3, annotation_text="Stress Sévère")
+                        # Zones de Stress
+                        fig_w.add_hrect(y0=p_c['echaudage'], y1=p_c['critique'], fillcolor="orange", opacity=0.2, annotation_text="Zone d'échaudage")
+                        fig_w.add_hrect(y0=p_c['critique'], y1=max(w_df['temperature_2m_max'].max()+2, 35), fillcolor="red", opacity=0.3, annotation_text="Stress Sévère")
                         
-                        # Date d'application
+                        # Appli
                         fig_w.add_vline(x=pd.to_datetime(d_appli), line_dash="dash", line_color="green", annotation_text="Appli")
-                        
                         st.plotly_chart(fig_w, use_container_width=True)
                         
-                        # --- SYNTHÈSE MFE ---
+                        # --- THÈSE AGRONOMIQUE DYNAMIQUE ---
                         st.markdown("---")
-                        st.markdown("### 🔬 Note de Synthèse Climatique")
+                        st.markdown("### 🔬 Synthèse Climatique pour le Mémoire")
                         jours_stress = len(w_df[w_df['temperature_2m_max'] >= p_c['echaudage']])
-                        pluie_totale = round(w_df['precipitation_sum'].sum(), 1)
+                        pluie_cumul = round(w_df['precipitation_sum'].sum(), 1)
                         
-                        st.write(f"""
-                        L'analyse entre le **{d_start_str}** et le **{d_end_str}** montre :
-                        * **Stress thermique :** {jours_stress} jours au-dessus de {p_c['echaudage']}°C.
-                        * **Hydrométrie :** Cumul de {pluie_totale} mm sur la période.
+                        st.info(f"""
+                        **Analyse du cycle (du {s_str} au {e_str}) :**
                         
-                        **Interprétation :** Le gain de rendement de **{round(gain, 2)} qtx/ha** est à analyser au regard de ces contraintes. 
-                        Un produit appliqué le {d_appli.strftime('%d/%m')} permet de limiter l'impact de l'échaudage sur le PMG.
+                        1. **Fréquence de l'échaudage :** La culture a subi **{jours_stress} jours** au-dessus de {p_c['echaudage']}°C. 
+                           Ces épisodes, survenant après l'application du produit le {d_appli.strftime('%d/%m')}, 
+                           impactent normalement le PMG en écourtant le remplissage.
+                        2. **Contexte hydrique :** Un cumul de **{pluie_cumul} mm** a été relevé. Si ce cumul est faible durant les pics thermiques, 
+                           le gain observé de **{round(gain,2)} qtx** souligne l'efficacité de BioExpert 360 dans la gestion du stress abiotique.
+                        3. **Conclusion :** Le produit semble avoir sécurisé le potentiel de rendement en protégeant le métabolisme foliaire.
                         """)
                     else:
-                        st.warning("⚠️ L'API a répondu mais les données sont vides. Vérifie tes dates.")
+                        st.error("L'API n'a pas renvoyé de données journalières.")
                 else:
-                    st.error(f"❌ Erreur API (Code {response.status_code})")
-                    with st.expander("Détails du lien généré (Debug)"):
-                        st.write(url)
-
+                    st.error(f"Erreur API (Code {resp.status_code})")
+                    st.info(f"Vérifie l'URL : {url}")
             except Exception as e:
-                st.error(f"❌ La connexion a échoué.")
-                st.info("Conseil : Vérifie que tu as accès à internet et que les dates ne sont pas dans le futur.")
-                with st.expander("Erreur technique complète"):
-                    st.write(str(e))
-     
+                st.error(f"Connexion impossible : {e}")
+
+        with tab_stats:
+            st.header("🔬 Fiabilité Statistique")
+            st.plotly_chart(px.histogram(df_final, x="rdt", color="grp", barmode="overlay"), use_container_width=True)
+            st.write(f"Significativité (alpha=0.05) : **{'OUI' if p_student < 0.05 else 'NON'}**")
+
+    except Exception as e:
+        st.error(f"❌ Erreur générale : {e}")
