@@ -116,26 +116,58 @@ if uploaded_file:
             d_end_archive = min(d_recolte, (datetime.now() - timedelta(days=5)).date())
             url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={d_semis}&end_date={d_end_archive}&daily=temperature_2m_max,precipitation_sum&timezone=auto"
             
-            try:
-                r = requests.get(url).json()
-                if 'daily' in r:
-                    w_df = pd.DataFrame(r['daily'])
-                    w_df['time'] = pd.to_datetime(w_df['time'])
-                    
-                    fig_w = go.Figure()
-                    # Pluie
-                    fig_w.add_trace(go.Bar(x=w_df['time'], y=w_df['precipitation_sum'], name="Pluie (mm)", marker_color='blue', opacity=0.3))
-                    # Temp Max
-                    fig_w.add_trace(go.Scatter(x=w_df['time'], y=w_df['temperature_2m_max'], name="T° Max", line_color='red'))
-                    
-                    # Seuils de stress Arvalis
-                    fig_w.add_hrect(y0=p_c['echaudage'], y1=p_c['critique'], fillcolor="orange", opacity=0.2, annotation_text="Echaudage")
-                    fig_w.add_hrect(y0=p_c['critique'], y1=max(w_df['temperature_2m_max'].max(), 35), fillcolor="red", opacity=0.3, annotation_text="Stress Sévère")
-                    
-                    # Appli
-                    fig_w.add_vline(x=pd.to_datetime(d_appli), line_dash="dash", line_color="green", annotation_text="Application")
-                    
-                    st.plotly_chart(fig_w, use_container_width=True)
+           try:
+                # FORMATAGE STRICT DES DATES (Correction majeure)
+                d_start_str = d_semis.strftime("%Y-%m-%d")
+                d_end_str = d_end_archive.strftime("%Y-%m-%d")
+                
+                url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={d_start_str}&end_date={d_end_str}&daily=temperature_2m_max,precipitation_sum&timezone=auto"
+                
+                # Ajout d'un timeout de 10 secondes pour éviter le blocage
+                response = requests.get(url, timeout=10)
+                
+                if response.status_code == 200:
+                    r = response.json()
+                    if 'daily' in r:
+                        w_df = pd.DataFrame(r['daily'])
+                        w_df['time'] = pd.to_datetime(w_df['time'])
+                        
+                        fig_w = go.Figure()
+                        # Pluie
+                        fig_w.add_trace(go.Bar(x=w_df['time'], y=w_df['precipitation_sum'], name="Pluie (mm)", marker_color='blue', opacity=0.3))
+                        # Temp Max
+                        fig_w.add_trace(go.Scatter(x=w_df['time'], y=w_df['temperature_2m_max'], name="T° Max", line_color='red'))
+                        
+                        # Seuils de stress Arvalis
+                        fig_w.add_hrect(y0=p_c['echaudage'], y1=p_c['critique'], fillcolor="orange", opacity=0.2, annotation_text="Echaudage")
+                        fig_w.add_hrect(y0=p_c['critique'], y1=max(w_df['temperature_2m_max'].max(), 35), fillcolor="red", opacity=0.3, annotation_text="Stress Sévère")
+                        
+                        # Appli
+                        fig_w.add_vline(x=pd.to_datetime(d_appli), line_dash="dash", line_color="green", annotation_text="Application")
+                        
+                        st.plotly_chart(fig_w, use_container_width=True)
+                        
+                        # --- THÈSE AGRONOMIQUE ---
+                        st.markdown("---")
+                        st.markdown("### 🔬 Synthèse de l'aspect climatique de l'année")
+                        jours_stress = len(w_df[w_df['temperature_2m_max'] >= p_c['echaudage']])
+                        
+                        st.write(f"""
+                        L'analyse climatique entre le **{d_start_str}** et le **{d_end_str}** met en évidence :
+                        
+                        * **Intensité de l'échaudage :** Nous avons comptabilisé **{jours_stress} jours** au-dessus du seuil de {p_c['echaudage']}°C. 
+                        * **Fenêtre d'application :** Le gain de rendement de **{round(gain,2)} qtx** est à mettre en perspective avec ces pics de chaleur.
+                        * **Effet hydrique :** Cumul de pluie enregistré : **{round(w_df['precipitation_sum'].sum(),1)} mm**.
+                        """)
+                    else:
+                        st.warning("⚠️ L'API a répondu mais ne contient pas de données 'daily'. Vérifie les coordonnées GPS de ton fichier.")
+                else:
+                    st.error(f"❌ Erreur API Open-Meteo (Code {response.status_code}). L'URL est peut-être mal formée.")
+                    st.code(url) # Affiche l'URL pour débugger
+            except requests.exceptions.Timeout:
+                st.error("⌛ Le serveur météo est trop lent à répondre. Réessaye dans un instant.")
+            except Exception as e:
+                st.error(f"❌ Erreur technique : {e}")
                     
                     # --- THÈSE AGRONOMIQUE ---
                     st.markdown("---")
