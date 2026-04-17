@@ -45,6 +45,16 @@ with st.sidebar:
     with st.expander("💰 ÉCONOMIE", expanded=True):
         prix_vente = st.number_input("Prix de vente (€/T)", value=210)
         cout_prod = st.number_input("Coût Produit (€/ha)", value=45)
+        
+    with st.expander("🔬 NIVEAU D'ANALYSE", expanded=True):
+        mode_analyse = st.radio("Type d'affichage", ["Global par Bande", "Détaillé par Potentiel"])
+        if mode_analyse == "Détaillé par Potentiel":
+            if 'potentiel' in df.columns:
+                liste_pot = ["Tous"] + list(df['potentiel'].unique())
+                pot_cible = st.selectbox("Filtrer un potentiel ?", liste_pot)
+            else:
+                st.warning("⚠️ Colonne 'potentiel' non trouvée dans le fichier.")
+                mode_analyse = "Global par Bande"
 
 # --- 4. TRAITEMENT DU FICHIER ---
 if uploaded_file:
