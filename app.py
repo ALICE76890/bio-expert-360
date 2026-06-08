@@ -765,6 +765,7 @@ with tab_map:
         st.info("Géométrie non disponible.")
     else:
         try:
+            # 1. Préparation de la couche de base
             gdf_plot = gdf.copy()
             gdf_plot.columns = gdf_plot.columns.str.lower().str.strip()
             gdf_plot['grp'] = gdf_plot['bande'].apply(lambda x: 'Produit' if x == val_p else 'Témoin')
@@ -776,30 +777,68 @@ with tab_map:
             )
             gdf_plot['rdt_carte'] = gdf_plot['rdt_nettoye'].fillna(gdf_plot['rdt_brut'])
 
-            # Recentrage ultra-sécurisé via les limites globales de la couche géospatiale
+            # 2. Sélection du mode d'affichage par l'utilisateur
+            st.markdown("### 🗺️ Options de visualisation spatiale")
+            mode_carte = st.radio(
+                "Sélectionnez le niveau de détail de la carte :",
+                ["Points / Polygones individuels (Vue brute)", "Synthèse par Zone de Potentiel (Vue agrégée)"],
+                horizontal=True
+            )
+
+            # Recentrage universel
             bounds = gdf_plot.total_bounds
             center_lon = (bounds[0] + bounds[2]) / 2
             center_lat = (bounds[1] + bounds[3]) / 2
- 
-            fig_map = px.choropleth_mapbox(
-                gdf_plot, 
-                geojson=gdf_plot.__geo_interface__,
-                locations=gdf_plot.index, 
-                color='rdt_carte',
-                color_continuous_scale='RdYlGn',
-                mapbox_style="open-street-map",
-                zoom=14,
-                center={"lat": center_lat, "lon": center_lon},
-                opacity=0.75,
-                hover_data={
-                    'bande': True, 
-                    'rdt_carte': ':.1f', 
-                    'potentiel': True
-                } if 'potentiel' in gdf_plot.columns else {'bande': True, 'rdt_carte': ':.1f'},
-                labels={'rdt_carte': 'Rendement (qtx/ha)'},
-                title="Carte de rendement géoréférencée"
-            )
-            fig_map.update_layout(height=550, margin={"r": 0, "t": 40, "l": 0, "b": 0})
+
+            # --- CAS 1 : VUE AGRÉGÉE PAR ZONE DE POTENTIEL ---
+            if mode_carte == "Synthèse par Zone de Potentiel (Vue agrégée)" and 'potentiel' in gdf_plot.columns:
+                
+                # Dissolve de GeoPandas : fusionne les géométries et calcule la moyenne de rendement
+                gdf_potentiel = gdf_plot.dissolve(by='potentiel', aggfunc={'rdt_carte': 'mean'}).reset_index()
+                
+                # Arrondir la moyenne pour un affichage propre
+                gdf_potentiel['rdt_moyen'] = gdf_potentiel['rdt_carte'].round(1)
+
+                fig_map = px.choropleth_mapbox(
+                    gdf_potentiel, 
+                    geojson=gdf_potentiel.__geo_interface__,
+                    locations=gdf_potentiel.index, 
+                    color='rdt_moyen',
+                    color_continuous_scale='RdYlGn',
+                    mapbox_style="open-street-map",
+                    zoom=14,
+                    center={"lat": center_lat, "lon": center_lon},
+                    opacity=0.8,
+                    hover_data={'potentiel': True, 'rdt_moyen': True},
+                    labels={'rdt_moyen': 'Rdt Moyen (qtx/ha)', 'potentiel': 'Zone'},
+                    title="Moyenne des rendements par Zone de Potentiel"
+                )
+
+            # --- CAS 2 : VUE PAR DÉFAUT (INDIVIDUELLE) ---
+            else:
+                if mode_carte == "Synthèse par Zone de Potentiel (Vue agrégée)":
+                    st.warning("⚠️ Impossible d'agréger : la colonne 'potentiel' est absente de votre fichier.")
+                
+                fig_map = px.choropleth_mapbox(
+                    gdf_plot, 
+                    geojson=gdf_plot.__geo_interface__,
+                    locations=gdf_plot.index, 
+                    color='rdt_carte',
+                    color_continuous_scale='RdYlGn',
+                    mapbox_style="open-street-map",
+                    zoom=14,
+                    center={"lat": center_lat, "lon": center_lon},
+                    opacity=0.75,
+                    hover_data={
+                        'bande': True, 
+                        'rdt_carte': ':.1f', 
+                        'potentiel': True
+                    } if 'potentiel' in gdf_plot.columns else {'bande': True, 'rdt_carte': ':.1f'},
+                    labels={'rdt_carte': 'Rendement (qtx/ha)'},
+                    title="Carte des rendements individuels (Post-IQR)"
+                )
+            
+            fig_map.update_layout(height=600, margin={"r": 0, "t": 40, "l": 0, "b": 0})
             st.plotly_chart(fig_map, use_container_width=True)
             
         except Exception as e:
