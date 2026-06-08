@@ -33,7 +33,7 @@ except ImportError:
 # 1. CONFIG PAGE & SESSIONS
 # ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Bio-Expert 360 Photo",
+    page_title="Bio-Expert 360 Numérique",
     layout="wide",
     page_icon="📸",
     initial_sidebar_state="expanded"
@@ -92,8 +92,8 @@ CORRECTION_METHODS = {
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. SIDEBAR & NAVIGATION
 # ══════════════════════════════════════════════════════════════════════════════
-st.sidebar.title("📸 Bio-Expert Photo")
-st.sidebar.caption("Analyse par Imagerie GéoTIFF Be-API")
+st.sidebar.title("📸 Bio-Expert 360 Numérique")
+st.sidebar.caption("Sonde de pixels par matriciel GéoTIFF")
 st.sidebar.markdown("---")
 
 page = st.sidebar.radio("Navigation", ["1. 🚜 Pré-traitement & Nettoyage", "2. 📈 Synthèse & Statistiques"])
@@ -106,7 +106,7 @@ with st.sidebar.expander("🌾 CONFIGURATION COMMERCIALE", expanded=False):
     alpha_v    = ALPHA_LEVELS[alpha]
     corr_method = st.selectbox("Correction tests multiples", list(CORRECTION_METHODS.keys()))
 
-# 🛠️ FONCTIONS STATS INTERNES
+# 🛠️ FONCTIONS STATISTIQUES REPRISES ET SÉCURISÉES
 def bootstrap_ci(data, stat_fn=np.mean, n=5000, ci=0.95):
     rng = np.random.default_rng(42)
     boot_stats = np.array([stat_fn(rng.choice(data, len(data), replace=True)) for _ in range(n)])
@@ -155,13 +155,13 @@ def run_statistical_tests(data_p, data_t, alpha_v=0.05, n_boot=5000):
     return result
 
 def run_anova_analysis(df_final, alpha_v=0.05):
-    if not HAS_STATSMODELS or 'potentiel' not in df_final.columns: return None, "Erreur", None, False
+    if not HAS_STATSMODELS or 'potentiel' not in df_final.columns: return None, "Données insuffisantes", None, False
     nb_zones = df_final['potentiel'].dropna().nunique()
-    if nb_zones <= 1: return None, f"Une seule zone détectée ({df_final['potentiel'].dropna().iloc[0] if nb_zones==1 else 'vide'}). ANOVA bloquée.", None, False
+    if nb_zones <= 1: return None, f"Une seule zone de potentiel détectée ({df_final['potentiel'].dropna().iloc[0] if nb_zones==1 else 'vide'}). Modèle ANOVA bloqué.", None, False
     try:
         model = smf.ols("rdt ~ C(grp) + C(potentiel) + C(grp):C(potentiel)", data=df_final).fit()
-        return sm.stats.anova_lm(model, typ=2), "📐 ANOVA à 2 facteurs : Traitement × Imagerie Sol", model, True
-    except Exception as e: return None, str(e), None, False
+        return sm.stats.anova_lm(model, typ=2), "📐 ANOVA à 2 facteurs : Traitement × Numéro de Zone Be-API", model, True
+    except Exception as e: return None, f"Erreur de calcul : {str(e)}", None, False
 
 def apply_correction(p_values_dict, method_key, alpha_v):
     if not HAS_MULTITEST or not method_key:
@@ -175,17 +175,17 @@ def apply_correction(p_values_dict, method_key, alpha_v):
 # PAGE 1 : INTERACTIVE DE NETTOYAGE
 # ══════════════════════════════════════════════════════════════════════════════
 if page == "1. 🚜 Pré-traitement & Nettoyage":
-    st.title("🚜 Étape 1 : Numérisation & Nettoyage par Photo")
+    st.title("🚜 Étape 1 : Nettoyage & Extraction des Zones de Potentiel")
     st.markdown("""
-    Glissez vos points bruts de batteuse et votre carte d'imagerie Be-API exportée en **GeoTIFF (.tif)** depuis QGIS.
-    Le système va scanner la couleur de la photo sous chaque coordonnée de récolte.
+    Déposez vos points bruts de batteuse et votre carte d'imagerie Be-API exportée en **GeoTIFF (.tif)** depuis QGIS.
+    Le système va extraire le vrai numéro de zone gravé dans l'image sous chaque coordonnée de récolte.
     """)
 
     col_file1, col_file2 = st.columns(2)
     with col_file1:
         file_batteuse = st.file_uploader("1. Points de la Batteuse (.zip QGIS)", type=["zip"], key="batteuse")
     with col_file2:
-        file_geotiff = st.file_uploader("2. Carte BE-API Géoréférencée (.tif ou .tiff)", type=["tif", "tiff"], key="beapi_raster")
+        file_geotiff = st.file_uploader("2. Carte BE-API Recalée (.tif ou .tiff)", type=["tif", "tiff"], key="beapi_raster")
 
     if file_batteuse and file_geotiff:
         try:
@@ -201,28 +201,28 @@ if page == "1. 🚜 Pré-traitement & Nettoyage":
                     crs_raster = src_raster.crs
                     gdf_bat_m = gdf_bat.to_crs(crs_raster)
                     
-                    st.success("✅ Données synchronisées et alignées sur le même repère spatial !")
+                    st.success("✅ Fichiers synchronisés ! Ajustez vos curseurs batteuse pour lancer le tri.")
                     st.divider()
 
-                    st.subheader("⚙️ Paramètres de nettoyage automatique")
+                    st.subheader("⚙️ Paramètres de nettoyage automatique de la batteuse")
                     c_clean1, c_clean2, c_clean3 = st.columns(3)
                     with c_clean1:
                         border_dist = st.slider("Exclusion des bordures de la carte (mètres)", 0, 30, 12)
                         vitesse_range = st.slider("Plage de Vitesse autorisée (m/s)", 0.5, 5.0, (1.5, 3.0))
                     with c_clean2:
-                        coupe_unit = st.radio("Unité d'origine de la batteuse", ["Feet (Pieds)", "Mètres"])
-                        coupe_range = st.slider("Largeur de coupe autorisée (mètres)", 1.0, 15.0, (6.0, 8.0))
+                        coupe_unit = st.radio("Unité de la batteuse d'origine", ["Feet (Pieds)", "Mètres"])
+                        coupe_range = st.slider("Largeur de coupe acceptée (mètres)", 1.0, 15.0, (6.0, 8.0))
                     with c_clean3:
-                        humid_range = st.slider("Humidité grain acceptée (%)", 5.0, 25.0, (10.0, 18.0))
+                        humid_range = st.slider("Humidité grain tolérée (%)", 5.0, 25.0, (10.0, 18.0))
                         temps_range = st.slider("Temps de réponse capteur (secondes)", 0.1, 5.0, (0.8, 2.0))
 
-                    if st.button("🚀 Sonder l'image & Filtrer la donnée"):
-                        with st.spinner("Analyse spectrale des pixels sous vos points..."):
+                    if st.button("🚀 Sonder les Numéros de Zones & Filtrer"):
+                        with st.spinner("Sondage numérique des pixels en cours..."):
                             df_work = gdf_bat_m.copy()
                             df_work.columns = df_work.columns.str.lower().str.strip()
                             st.session_state.n_initial_points = len(df_work)
 
-                            # 1. Conversions
+                            # 1. Conversions des unités machines
                             if coupe_unit == "Feet (Pieds)" and 'largeur' in df_work.columns:
                                 df_work['largeur_m'] = df_work['largeur'] * 0.3048
                             elif 'largeur' in df_work.columns:
@@ -242,23 +242,19 @@ if page == "1. 🚜 Pré-traitement & Nettoyage":
                                 df_work = df_work[(df_work['temps'] >= temps_range[0]) & (df_work['temps'] <= temps_range[1])]
                             df_work = df_work[(df_work['largeur_m'] >= coupe_range[0]) & (df_work['largeur_m'] <= coupe_range[1])]
 
-                            # 3. LA SONDE DE COULEUR RASTER
+                            # ==================================================
+                            # 3. LA SONDE DE POTENTIEL PAR NUMÉRO DE PIXEL
+                            # ==================================================
                             coord_list = [(pt.x, pt.y) for pt in df_work.geometry]
-                            valeurs_pixels = [x[0] for x in src_raster.sample(coord_list)]
-                            unique_vals = np.unique(valeurs_pixels)
                             
-                            mapping_zones = {}
-                            for idx, val in enumerate(sorted(unique_vals)):
-                                if idx == 0: mapping_zones[val] = "Potentiel Faible"
-                                elif idx == 1: mapping_zones[val] = "Potentiel Moyen"
-                                else: mapping_zones[val] = "Potentiel Fort"
-                                
-                            df_work['potentiel'] = [mapping_zones.get(p, "Potentiel Moyen") for p in valeurs_pixels]
+                            # Lecture directe du chiffre inscrit dans le raster
+                            num_zones = [int(x[0]) for x in src_raster.sample(coord_list)]
+                            df_work['potentiel'] = [f"Zone {n}" for n in num_zones]
 
                             if 'bande' not in df_work.columns:
                                 df_work['bande'] = 'Inconnu'
 
-                            # 4. Nettoyage mathématique +/- 2 Écarts-types
+                            # 4. Nettoyage statistique (Moyenne +/- 2 Écarts-types)
                             mean_rdt = df_work['rdt'].mean()
                             std_rdt = df_work['rdt'].std()
                             df_work = df_work[(df_work['rdt'] >= mean_rdt - 2*std_rdt) & (df_work['rdt'] <= mean_rdt + 2*std_rdt)]
@@ -267,7 +263,7 @@ if page == "1. 🚜 Pré-traitement & Nettoyage":
                             st.session_state.df_propre = df_work.to_crs(epsg=4326)
                             
                             st.balloons()
-                            st.success("🎉 Données nettoyées et liées à l'image ! Passez à la page 2.")
+                            st.success("🎉 Sondage et filtrage terminés ! Les numéros de zone ont été attribués. Ouvrez la page 2.")
 
                 if st.session_state.df_propre is not None:
                     st.markdown("---")
@@ -276,21 +272,21 @@ if page == "1. 🚜 Pré-traitement & Nettoyage":
                     pct_garde = (len(st.session_state.df_propre) / st.session_state.n_initial_points) * 100
                     
                     m1, m2, m3 = st.columns(3)
-                    m1.metric("Points Bruts Batteuse", f"{st.session_state.n_initial_points} pts")
-                    m2.metric("Points Supprimés (Anomalies)", f"{pts_suppr} pts", delta=f"-{100-pct_garde:.1f}%", delta_color="inverse")
-                    m3.metric("Points Validés", f"{len(st.session_state.df_propre)} pts")
+                    m1.metric("Points Initiaux", f"{st.session_state.n_initial_points} pts")
+                    m2.metric("Anomalies Jetées", f"{pts_suppr} pts", delta=f"-{100-pct_garde:.1f}%", delta_color="inverse")
+                    m3.metric("Points Propres Gardés", f"{len(st.session_state.df_propre)} pts")
 
         except Exception as e:
-            st.error(f"❌ Erreur technique d'échantillonnage : {e}")
+            st.error(f"❌ Erreur de lecture des pixels de l'image : {e}")
     else:
-        st.info("💡 Chargez vos fichiers pour activer l'analyse spectrale interactive.")
+        st.info("💡 Chargez vos fichiers pour activer l'analyse spatiale.")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 2 : RENDU ET RAPPORT STATISTIQUE
+# PAGE 2 : RENDU STATISTIQUE SÉCURISÉ
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "2. 📈 Synthèse & Statistiques":
     if st.session_state.df_propre is None:
-        st.warning("⚠️ Aucune donnée disponible. Faites d'abord le tri en page 1.")
+        st.warning("⚠️ Aucune donnée disponible. Effectuez d'abord le nettoyage en page 1.")
         st.stop()
 
     df_final = st.session_state.df_propre.copy()
@@ -302,7 +298,7 @@ elif page == "2. 📈 Synthèse & Statistiques":
     gain = data_p.mean() - data_t.mean() if has_enough else 0.0
     marge = ((gain / 10) * prix_vente) - cout_prod
 
-    st.title("📈 Résultats validés par traitement d'image")
+    st.title("📈 Résultats par analyse matricielle")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Pts Produit", f"{n_p}")
     c2.metric("Pts Témoin", f"{n_t}")
@@ -320,28 +316,28 @@ elif page == "2. 📈 Synthèse & Statistiques":
     — {stat_res['main_test']['name']} · p = {p_main:.4f} · Cohen's d = {stat_res['effect']['d']:.2f}
     </div>"""
     st.markdown(html, unsafe_allow_html=True)
-    st.markdown("")
 
-    tab_rdt, tab_boot, tab_anova, tab_map = st.tabs(["📊 Distributions", "🎲 Bootstrap", "📐 ANOVA Image", "🗺️ Carte finale"])
+    tab_rdt, tab_boot, tab_anova, tab_map = st.tabs(["📊 Distributions", "🎲 Bootstrap", "📐 ANOVA par Numéro", "🗺️ Carte finale"])
 
     with tab_rdt:
-        st.markdown('<div class="vulgarisation">💡 <b>Comprendre cette page :</b> Les graphiques montrent vos points nettoyés. Les indicateurs testent si la distribution est exploitable sans biais.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="vulgarisation">💡 <b>Comprendre cette page :</b> Les graphiques montrent la structure de vos points épurés de tout bruit.</div>', unsafe_allow_html=True)
         col1, col2 = st.columns(2)
         col1.plotly_chart(px.box(df_final, x="grp", y="rdt", color="grp", points="all", notched=True, color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'}), use_container_width=True)
         col2.plotly_chart(px.violin(df_final, x="grp", y="rdt", color="grp", box=True, color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'}), use_container_width=True)
 
     with tab_boot:
-        st.markdown('<div class="vulgarisation">🎲 <b>Comprendre cette page :</b> Si l\'intervalle ci-dessous ne contient pas la valeur zéro, l\'effet biologique du produit est confirmé à 95% de certitude.</div>', unsafe_allow_html=True)
-        st.metric("VRAI GAIN GARANTI (IC)", f"[{stat_res['bootstrap']['ci_diff'][0]:.2f} à {stat_res['bootstrap']['ci_diff'][1]:.2f}] qtx/ha")
+        st.markdown('<div class="vulgarisation">🎲 <b>Comprendre cette page :</b> Si l\'intervalle ci-dessous exclut la valeur zéro, le gain biologique de votre produit est définitivement validé.</div>', unsafe_allow_html=True)
+        st.metric("VRAI GAIN NET (IC)", f"[{stat_res['bootstrap']['ci_diff'][0]:.2f} à {stat_res['bootstrap']['ci_diff'][1]:.2f}] qtx/ha")
         fig_boot = go.Figure(go.Histogram(x=stat_res['bootstrap']['boot_diff'], nbinsx=80, marker_color='#3498db', opacity=0.7))
         fig_boot.add_vline(x=0, line_dash="dash", line_color="red")
         st.plotly_chart(fig_boot, use_container_width=True)
 
     with tab_anova:
-        st.markdown('<div class="vulgarisation">📐 <b>Comprendre cette page :</b> L\'ANOVA mesure l\'interaction. Elle montre si la couleur détectée sur la photo correspond à un changement d\'efficacité du produit.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="vulgarisation">📐 <b>Comprendre cette page :</b> L\'ANOVA analyse l\'interaction avec vos numéros de zones Be-API pour voir si le produit sur-performe sur des zones spécifiques.</div>', unsafe_allow_html=True)
         anova_table, anova_title, anova_model, has_pot = run_anova_analysis(df_final, alpha_v)
         if anova_table is None: st.error(f"❌ {anova_title}")
         else:
+            st.subheader(anova_title)
             st.dataframe(anova_table.round(4), use_container_width=True)
             if has_pot:
                 st.plotly_chart(px.box(df_final, x="potentiel", y="rdt", color="grp", color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'}), use_container_width=True)
@@ -355,3 +351,9 @@ elif page == "2. 📈 Synthèse & Statistiques":
             fig_map.update_layout(height=600, margin={"r": 0, "t": 40, "l": 0, "b": 0})
             st.plotly_chart(fig_map, use_container_width=True)
         except Exception as e: st.warning(f"Carte indisponible : {e}")
+
+    # ── EXPORT DU RAPPORT ────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("📤 Export du Rapport")
+    report_text = f"# Rapport d'essai Numérique Be-API\nGain Moyen : +{gain:.2f} qtx\nMarge Net : {marge:.0f} €/ha\np-value : {p_main:.4f}"
+    st.download_button("⬇️ Télécharger le mémoire (.md)", report_text.encode("utf-8"), file_name="Rapport_BioExpert_Photo.md", mime="text/markdown")
