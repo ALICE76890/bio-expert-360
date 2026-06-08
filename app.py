@@ -205,41 +205,36 @@ def run_statistical_tests(data_p, data_t, alpha_v=0.05, n_boot=5000):
  
 def run_anova_analysis(df_final, alpha_v=0.05):
     """
-    ANOVA à deux facteurs si 'potentiel' présent, sinon à un facteur.
-    Retourne la table ANOVA et le modèle.
+    ANOVA à deux facteurs si 'potentiel' est valide et comporte plusieurs niveaux.
+    Si une seule zone de potentiel est détectée, bloque le calcul et avertit l'utilisateur.
     """
     if not HAS_STATSMODELS:
-        return None, "statsmodels non installé"
- 
+        return None, "statsmodels non installé", None, False
+
+    # 1. Vérification fine de la colonne potentiel
     has_pot = 'potentiel' in df_final.columns and df_final['potentiel'].nunique() > 1
- 
+    
+    # 2. Cas spécifique : la colonne existe mais n'a qu'une seule valeur unique
+    if 'potentiel' in df_final.columns and df_final['potentiel'].nunique() == 1:
+        seule_zone = df_final['potentiel'].iloc[0]
+        msg_erreur = f"Impossible de réaliser l'ANOVA à 2 facteurs : une seule zone de potentiel détectée ('{seule_zone}'). Pour croiser les facteurs, il faut au moins 2 zones différentes dans le fichier."
+        return None, msg_erreur, None, False
+
+    # 3. Choix de la formule selon le nombre de facteurs réels
     if has_pot:
         formula = "rdt ~ C(grp) + C(potentiel) + C(grp):C(potentiel)"
-        title   = "ANOVA à 2 facteurs : Traitement × Zone de potentiel"
+        title   = "📐 ANOVA à 2 facteurs : Traitement × Zone de potentiel"
     else:
         formula = "rdt ~ C(grp)"
-        title   = "ANOVA à 1 facteur : Traitement"
- 
+        title   = "📐 ANOVA à 1 facteur : Traitement (Global)"
+
+    # 4. Exécution du modèle
     try:
-        model  = smf.ols(formula, data=df_final).fit()
+        model   = smf.ols(formula, data=df_final).fit()
         anova_t = sm.stats.anova_lm(model, typ=2)
         return anova_t, title, model, has_pot
     except Exception as e:
-        return None, str(e), None, False
- 
- 
-def run_mixed_model(df_final):
-    """Modèle mixte avec 'bloc' comme effet aléatoire."""
-    if not HAS_STATSMODELS:
-        return None, "statsmodels non installé"
-    if 'bloc' not in df_final.columns or df_final['bloc'].nunique() < 2:
-        return None, "Colonne 'bloc' absente ou insuffisante (< 2 blocs)"
- 
-    try:
-        model = smf.mixedlm("rdt ~ C(grp)", df_final, groups=df_final["bloc"]).fit(reml=True)
-        return model, None
-    except Exception as e:
-        return None, str(e)
+        return None, f"Erreur de calcul dans le modèle : {str(e)}", None, False
  
  
 def apply_correction(p_values_dict, method_key, alpha_v):
