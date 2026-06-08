@@ -222,7 +222,6 @@ if page == "1. 🚜 Pré-traitement & Nettoyage":
                             df_work.columns = df_work.columns.str.lower().str.strip()
                             st.session_state.n_initial_points = len(df_work)
 
-                            # Identifiant unique temporaire pour séparer plus tard le brut du propre
                             df_work['id_unique_point'] = range(len(df_work))
 
                             # 1. Conversions des unités machines
@@ -258,7 +257,6 @@ if page == "1. 🚜 Pré-traitement & Nettoyage":
                             std_rdt = df_work['rdt'].std()
                             df_work = df_work[(df_work['rdt'] >= mean_rdt - 2*std_rdt) & (df_work['rdt'] <= mean_rdt + 2*std_rdt)]
 
-                            # SAUVEGARDE STRICTE : Le brut complet ET le propre convertis en EPSG:4326 (GPS)
                             st.session_state.gdf_brut = gdf_bat_m.to_crs(epsg=4326)
                             st.session_state.gdf_brut.columns = st.session_state.gdf_brut.columns.str.lower().str.strip()
                             st.session_state.gdf_brut['id_unique_point'] = range(len(st.session_state.gdf_brut))
@@ -345,106 +343,78 @@ elif page == "2. 📈 Synthèse & Statistiques":
             if has_pot:
                 st.plotly_chart(px.box(df_final, x="potentiel", y="rdt", color="grp", color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'}), use_container_width=True)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # MODIFICATION COMPLÈTE ICI : ONGLETTES CARTE DIAGNOSTIC (CONSERVÉ VS SUPPRIMÉ)
-    # ─────────────────────────────────────────────────────────────────────────
+    # TAB 6 : CONFIGURATION EXPLICITE DE LA CARTE DE ZONE BE-API
     with tab_map:
-        st.markdown('<div class="vulgarisation">💡 <b>Carte de Diagnostic Interactive :</b> Les points colorés représentent vos données valides retenues pour l\'étude statistique. Les points <b>gris</b> représentent les anomalies ou zones de bordures éliminées par vos filtres batteuse.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="vulgarisation">💡 <b>Carte de Contrôle Qualité :</b> Chaque couleur représente une <b>Zone Be-API différente</b>. Si vos points changent de couleur en suivant les lignes de votre champ, c’est que la sonde de pixels a fonctionné à 100 % ! Les points gris sont les anomalies supprimées.</div>', unsafe_allow_html=True)
         try:
-            # 1. On récupère la couche brute complète de la session
             gdf_complet = st.session_state.gdf_brut.copy()
-            
-            # Extraction des coordonnées GPS
             gdf_complet['lat'] = gdf_complet.geometry.centroid.y
             gdf_complet['lon'] = gdf_complet.geometry.centroid.x
 
-            # 2. On identifie quels points de la couche brute sont présents dans la couche propre
             liste_id_propres = df_final['id_unique_point'].tolist()
-            
-            # On applique le statut de tri
             gdf_complet['statut_point'] = gdf_complet['id_unique_point'].apply(
                 lambda x: 'Point Validé' if x in liste_id_propres else 'Point Supprimé (Filtre)'
             )
 
-            # 3. Pour les points validés, on vient ré-injecter la valeur réelle du rdt propre
-            # Pour les points supprimés, on force une valeur ou un affichage distinct
             gdf_complet = gdf_complet.merge(
                 df_final[['id_unique_point', 'rdt', 'potentiel']], 
                 on='id_unique_point', 
                 how='left', 
                 suffixes=('_brut', '_propre')
             )
-            
-            # Si le point est supprimé, on n'affiche pas son rendement dans le dégradé de couleur
-            gdf_complet['rdt_carte'] = gdf_complet['rdt_propre']
 
-            # Option d'affichage pour l'utilisateur
-            affichage_choix = st.radio(
-                "Options d'affichage cartographique :",
-                ["Afficher tout le diagnostic (Validés + Supprimés en Gris)", "Afficher uniquement les points validés (Carte propre)"],
+            choix_couleur = st.radio(
+                "🎨 Mode de coloration de la carte :",
+                ["Colorer par Zone Be-API (Pour vérifier l'association 🎯)", "Colorer par niveau de Rendement (Pour voir la performance 🌾)"],
                 horizontal=True
             )
 
-            # Filtrage selon le choix
-            if affichage_choix == "Afficher uniquement les points validés (Carte propre)":
-                gdf_dessin = gdf_complet[gdf_complet['statut_point'] == 'Point Validé']
-            else:
-                gdf_dessin = gdf_complet
-
-            # Définition du centre géographique
             center_lat = float(gdf_complet['lat'].median())
             center_lon = float(gdf_complet['lon'].mean())
 
-            # Construction de la carte Plotly Graph Objects pour mélanger un dégradé de couleur et du gris
-            fig_map = go.Figure()
+            gdf_complet['rdt_propre'] = pd.to_numeric(gdf_complet['rdt_propre'], errors='coerce').fillna(0)
+            gdf_complet['taille_bulle'] = gdf_complet['rdt_propre'].apply(lambda x: max(x, 20) if x > 0 else 5)
 
-            # Trace 1 : Les points supprimés (Si demandés, dessinés en gris discret)
-            if affichage_choix == "Afficher tout le diagnostic (Validés + Supprimés en Gris)":
-                df_suppr = gdf_dessin[gdf_dessin['statut_point'] == 'Point Supprimé (Filtre)']
+            if choix_couleur == "Colorer par Zone Be-API (Pour vérifier l'association 🎯)":
+                gdf_complet['classe_affichage'] = gdf_complet.apply(
+                    lambda row: row['potentiel'] if row['statut_point'] == 'Point Validé' else 'Point Éliminé', axis=1
+                )
+                palette_couleurs = px.colors.qualitative.Bold
+                
+                fig_map = px.scatter_mapbox(
+                    gdf_complet, lat="lat", lon="lon", color="classe_affichage", size="taille_bulle", size_max=12,
+                    color_discrete_sequence=palette_couleurs, mapbox_style="open-street-map", zoom=16,
+                    center={"lat": center_lat, "lon": center_lon},
+                    hover_data={'bande': True, 'rdt_brut': ':.1f', 'potentiel': True},
+                    labels={'classe_affichage': 'Légende des Zones'}
+                )
+            else:
+                fig_map = go.Figure()
+                df_suppr = gdf_complet[gdf_complet['statut_point'] == 'Point Supprimé (Filtre)']
                 fig_map.add_trace(go.Scattermapbox(
-                    lat=df_suppr['lat'],
-                    lon=df_suppr['lon'],
-                    mode='markers',
-                    marker=dict(size=5, color='#bdc3c7', opacity=0.4),
-                    name='Points Éliminés (Bordures/Bugs)',
-                    hoverinfo='text',
-                    text=[f"Statut : Rejeté par le filtre<br>Rdt brut : {r:.1f} qtx" if 'rdt_brut' in df_suppr.columns else "Rejeté" for r in df_suppr['rdt_brut']]
+                    lat=df_suppr['lat'], lon=df_suppr['lon'], mode='markers',
+                    marker=dict(size=5, color='#bdc3c7', opacity=0.4), name='Points Éliminés'
                 ))
 
-            # Trace 2 : Les points validés (Colorés du rouge au vert selon le rendement propre)
-            df_valides = gdf_dessin[gdf_dessin['statut_point'] == 'Point Validé']
-            
-            fig_map.add_trace(go.Scattermapbox(
-                lat=df_valides['lat'],
-                lon=df_valides['lon'],
-                mode='markers',
-                marker=dict(
-                    size=8,
-                    color=df_valides['rdt_carte'],
-                    colorscale='RdYlGn',
-                    showscale=True,
-                    colorbar=dict(title="Rendement Net (qtx)"),
-                    opacity=0.9
-                ),
-                name='Points Validés (Conservés)',
-                hoverinfo='text',
-                text=[f"Bande : {b}<br>Zone Sol : {z}<br><b>Rdt Net : {r:.1f} qtx</b>" for b, z, r in zip(df_valides['bande'] if 'bande' in df_valides.columns else ['Inconnu']*len(df_valides), df_valides['potentiel'], df_valides['rdt_carte'])]
-            ))
+                df_valides = gdf_complet[gdf_complet['statut_point'] == 'Point Validé']
+                fig_map.add_trace(go.Scattermapbox(
+                    lat=df_valides['lat'], lon=df_valides['lon'], mode='markers',
+                    marker=dict(
+                        size=8, color=df_valides['rdt_propre'], colorscale='RdYlGn', showscale=True,
+                        colorbar=dict(title="Rendement Net"), opacity=0.9
+                    ),
+                    name='Points Validés',
+                    text=[f"Zone : {z}<br>Rdt : {r:.1f} qtx" for z, r in zip(df_valides['potentiel'], df_valides['rdt_propre'])],
+                    hoverinfo='text'
+                ))
+                fig_map.update_layout(mapbox=dict(style="open-street-map", zoom=16, center=dict(lat=center_lat, lon=center_lon)), height=650, margin={"r": 0, "t": 40, "l": 0, "b": 0})
 
-            # Mise en page du fond de plan OpenStreetMap
-            fig_map.update_layout(
-                mapbox=dict(
-                    style="open-street-map",
-                    zoom=16,
-                    center=dict(lat=center_lat, lon=center_lon)
-                ),
-                height=650,
-                margin={"r": 0, "t": 40, "l": 0, "b": 0},
-                title="Suivi spatial du nettoyage (Validation des données de récolte)"
-            )
-            
             st.plotly_chart(fig_map, use_container_width=True)
-            
+
+            st.subheader("📋 Nombre de points de récolte capturés par chaque zone")
+            df_verif_points = df_final.groupby('potentiel').size().reset_index(name='Nombre de points associés')
+            st.dataframe(df_verif_points, use_container_width=True)
+
         except Exception as e: 
             st.warning(f"Carte diagnostic indisponible : {e}")
 
