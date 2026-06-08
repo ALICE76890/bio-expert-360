@@ -4,5 +4,6 @@ geopandas
 plotly
 scipy
 numpy
-shapely
 statsmodels
+shapely
+rasterio
