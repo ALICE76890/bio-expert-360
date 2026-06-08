@@ -523,38 +523,45 @@ L'IC sur la **différence** est le test le plus direct : si l'intervalle exclut 
 Avantage clé en agro : robuste aux **distributions asymétriques** fréquentes sur les rendements.
 """)
  
- 
-# ─────────────────────────────────────────────────────────────────────────────
+ # ─────────────────────────────────────────────────────────────────────────────
 # TAB 3 — ANOVA
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_anova:
     if not run_anova:
         st.info("ANOVA désactivée. Activez-la dans les options statistiques (sidebar).")
     elif not HAS_STATSMODELS:
-        st.warning("statsmodels requis : `pip install statsmodels`")
+        st.warning("statsmodels requis : ajoutez-le à votre fichier requirements.txt")
     else:
         anova_out = run_anova_analysis(df_final, alpha_v)
         anova_table, anova_title, anova_model, has_pot = anova_out
- 
+
         st.subheader(anova_title)
- 
+
         if anova_table is not None:
-            # Format table
+            # Format de la table
             at = anova_table.copy()
             at.columns = [c.replace('PR(>F)', 'p-value').replace('sum_sq', 'SCE').replace('mean_sq', 'CME') for c in at.columns]
             at = at.round(4)
             
+            # Fonction de coloration mise à jour avec .map()
             def style_pval(val):
                 try:
                     v = float(val)
-                    if v < 0.001: return 'background-color:#d4edda; font-weight:bold'
-                    if v < 0.05:  return 'background-color:#fff3cd'
+                    if v < 0.001: return 'background-color:#d4edda; font-weight:bold; color:#155724;'
+                    if v < alpha_v:  return 'background-color:#fff3cd; color:#856404;'
                     return ''
-                except: return ''
- 
-            st.dataframe(at.style.applymap(style_pval, subset=[c for c in at.columns if 'p-value' in c.lower() or 'PR' in c]),
-                         use_container_width=True)
- 
+                except: 
+                    return ''
+
+            # --- CORRECTION ICI : Remplacement de applymap par map ---
+            target_cols = [c for c in at.columns if 'p-value' in c.lower() or 'PR' in c]
+            if target_cols:
+                styled_at = at.style.map(style_pval, subset=target_cols)
+            else:
+                styled_at = at.style
+
+            st.dataframe(styled_at, use_container_width=True)
+
             # R² et résumé modèle
             r2 = anova_model.rsquared
             r2_adj = anova_model.rsquared_adj
@@ -562,14 +569,14 @@ with tab_anova:
             col1.metric("R² du modèle", f"{r2:.3f}")
             col2.metric("R² ajusté", f"{r2_adj:.3f}")
             col3.metric("F global (p)", f"{anova_model.fvalue:.2f} ({anova_model.f_pvalue:.4f})")
- 
+
             # Moyennes par groupe × potentiel
             if has_pot and 'potentiel' in df_final.columns:
                 st.subheader("Moyennes de cellule (Traitement × Zone de potentiel)")
                 pivot = df_final.groupby(['potentiel', 'grp'])['rdt'].agg(['mean', 'std', 'count']).round(2)
                 pivot.columns = ['Moy. (qtx)', 'Éc.-type', 'N']
                 st.dataframe(pivot, use_container_width=True)
- 
+
                 fig_inter = px.box(
                     df_final, x="potentiel", y="rdt", color="grp",
                     color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'},
@@ -577,7 +584,7 @@ with tab_anova:
                     labels={"potentiel": "Zone de potentiel", "rdt": "Rendement (qtx/ha)", "grp": "Groupe"}
                 )
                 st.plotly_chart(fig_inter, use_container_width=True)
- 
+
             # Résidus
             if anova_model is not None:
                 residuals = anova_model.resid
@@ -595,7 +602,7 @@ with tab_anova:
                 st.plotly_chart(fig_res, use_container_width=True)
         else:
             st.error(f"Erreur ANOVA : {anova_title}")
- 
+
         with st.expander("📝 Interpréter l'ANOVA en essais grande bande"):
             st.markdown(f"""
 **Pourquoi l'ANOVA ?** Le test de Student compare deux groupes. L'ANOVA permet de tester simultanément  
@@ -606,8 +613,7 @@ sur certaines zones de sol. Un p < {alpha_v} sur l'interaction impose une analys
  
 **R² = {r2:.2%}** → le modèle explique {r2:.0%} de la variabilité totale des rendements.
 """)
- 
- 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 4 — Modèle Mixte
 # ─────────────────────────────────────────────────────────────────────────────
