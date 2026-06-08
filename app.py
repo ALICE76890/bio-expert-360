@@ -44,6 +44,7 @@ st.markdown("""
 .verdict-sig   { background:#d4edda; border-left:4px solid #28a745; padding:12px 16px; border-radius:6px; color:#155724; }
 .verdict-nosig { background:#f8d7da; border-left:4px solid #dc3545; padding:12px 16px; border-radius:6px; color:#721c24; }
 .method-box    { background:#e8f4fd; border-left:4px solid #0077b6; padding:10px 14px; border-radius:6px; font-size:.9rem; }
+.vulgarisation { background:#f9f9f9; border-left:4px solid #6c757d; padding:12px; margin-bottom:10px; border-radius:4px; }
 </style>
 """, unsafe_allow_html=True)
  
@@ -286,7 +287,12 @@ try:
         st.error("❌ Aucun fichier .shp trouvé dans le zip.")
         st.stop()
  
-    gdf = gpd.read_file(os.path.join("temp", shp_files[0])).to_crs(epsg=4326)
+    # Lecture brute et forçage de la projection géographique en degrés GPS
+    gdf_raw = gpd.read_file(os.path.join("temp", shp_files[0]))
+    if gdf_raw.crs is None:
+        gdf_raw.crs = "EPSG:2154" # Par défaut si absent (Lambert-93 France)
+    gdf = gdf_raw.to_crs(epsg=4326)
+    
     df  = pd.DataFrame(gdf.drop(columns='geometry'))
     df.columns = df.columns.str.lower().str.strip()
  
@@ -380,7 +386,7 @@ d_val  = stat_res['effect']['d']
 pwr    = stat_res['effect']['power']
 ci_diff = stat_res['bootstrap']['ci_diff']
  
-# ── Verdict principal (visible dès l'ouverture) ────────────────────────────────
+# ── Verdict principal ────────────────────────────────
 sig  = p_main < alpha_v
 html = f"""<div class="{'verdict-sig' if sig else 'verdict-nosig'}">
 <strong>{'✅ Impact Significatif' if sig else '❌ Impact Non Démontré'}</strong> 
@@ -392,28 +398,34 @@ st.markdown("")
  
  
 # ══════════════════════════════════════════════════════════════════════════════
-# 7. ONGLETS
+# 7. ONGLETS ENRICHIS D'EXPLICATIONS PEDAGOGIQUES
 # ══════════════════════════════════════════════════════════════════════════════
 tab_rdt, tab_boot, tab_anova, tab_mix, tab_corr, tab_map = st.tabs([
-    "📊 Distribution",
+    "📊 Distribution & Tests",
     "🎲 Bootstrap & IC",
-    "📐 ANOVA",
+    "📐 ANOVA Spatial",
     "🔀 Modèle Mixte",
     "🔁 Tests Multiples",
     "🗺️ Carte parcelle",
 ])
  
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 1 — Distribution
+# TAB 1 — Distribution & Validation
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_rdt:
+    st.markdown("""
+    <div class="vulgarisation">
+    💡 <b>Comprendre cette page :</b> Avant de regarder si le produit fonctionne, on vérifie la "tête" de vos données. Les graphiques montrent comment se répartissent vos points. Les tests mathématiques du bas vérifient si vos données sont stables ou trop chaotiques, ce qui permet à l'application de choisir le test de comparaison le plus juste.
+    </div>
+    """, unsafe_allow_html=True)
+
     col1, col2 = st.columns([3, 2])
     with col1:
         fig_box = px.box(
             df_final, x="grp", y="rdt", color="grp", points="all", notched=True,
             color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'},
             labels={"grp": "Groupe", "rdt": "Rendement (qtx/ha)"},
-            title="Distribution des rendements avec encoche IC 95 %"
+            title="Distribution des rendements avec encoche de confiance"
         )
         fig_box.update_traces(quartilemethod="exclusive")
         st.plotly_chart(fig_box, use_container_width=True)
@@ -423,115 +435,100 @@ with tab_rdt:
             df_final, x="grp", y="rdt", color="grp", box=True,
             color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'},
             labels={"grp": "Groupe", "rdt": "Rendement (qtx/ha)"},
-            title="Densité de probabilité (violin)"
+            title="Densité de probabilité (Forme de la répartition)"
         )
         st.plotly_chart(fig_viol, use_container_width=True)
  
-    # Stats descriptives
     desc = df_final.groupby('grp')['rdt'].describe().round(2)
-    desc.columns = ['N', 'Moy.', 'Éc.-type', 'Min', 'Q25', 'Méd.', 'Q75', 'Max']
+    desc.columns = ['N (Nb points)', 'Moyenne', 'Écart-type (Variabilité)', 'Min', 'Q25', 'Médiane', 'Q75', 'Max']
     st.dataframe(desc, use_container_width=True)
  
-    # Diagnostics normalité
-    st.subheader("Diagnostics de validité")
+    st.subheader("📋 Les verrous de sécurité mathématiques")
     p_sp, p_st = stat_res['diagnostics']['shapiro_p']
     p_lev = stat_res['diagnostics']['levene_p']
  
     d1, d2, d3 = st.columns(3)
-    d1.metric("Shapiro-Wilk Produit", f"p = {p_sp:.4f}", "✅ Normal" if p_sp > alpha_v else "⚠️ Non-normal")
-    d2.metric("Shapiro-Wilk Témoin",  f"p = {p_st:.4f}", "✅ Normal" if p_st > alpha_v else "⚠️ Non-normal")
-    d3.metric("Levene (homogénéité)", f"p = {p_lev:.4f}", "✅ Homogène" if p_lev > alpha_v else "⚠️ Hétérogène")
+    d1.metric("Shapiro-Wilk (Produit)", f"p = {p_sp:.4f}", "✅ En cloche" if p_sp > alpha_v else "⚠️ Asymétrique")
+    d2.metric("Shapiro-Wilk (Témoin)",  f"p = {p_st:.4f}", "✅ En cloche" if p_st > alpha_v else "⚠️ Asymétrique")
+    d3.metric("Levene (Variances)", f"p = {p_lev:.4f}", "✅ Risque Homogène" if p_lev > alpha_v else "⚠️ Hétérogène")
  
-    with st.expander("ℹ️ Méthode sélectionnée"):
-        m = stat_res['main_test']
-        st.markdown(f"""<div class="method-box">
-Test utilisé : <b>{m['name']}</b> · Statistique : {m['stat']:.4f} · p = {m['p']:.4f}<br>
-Seuil α = {alpha_v} — {"La normalité ET l'homogénéité sont vérifiées → test paramétrique." if m['id']=='PARAM' else "Conditions paramétriques non remplies → test robuste."}
-</div>""", unsafe_allow_html=True)
- 
+    with st.expander("🔍 Guide de vulgarisation : C'est quoi la p-value, Shapiro et Levene ?"):
+        st.markdown(f"""
+        * **La p-value (p) :** C'est la jauge du hasard. Plus elle est petite (inférieure à votre seuil de {alpha_v}), plus on est sûr que le hasard n'y est pour rien. Si $p = 0.001$, il n'y avait qu'une chance sur 1000 que ce résultat arrive par chance.
+        * **Test de Shapiro-Wilk (Normalité) :** Il vérifie si vos rendements suivent une courbe naturelle "en cloche". 
+            * *Si $p > {alpha_v}$ (Normal) :* Vos données sont bien réparties autour de la moyenne.
+            * *Si $p < {alpha_v}$ (Non-normal) :* Il y a des paquets de points bizarres ou trop étalés.
+        * **Test de Levene (Homogénéité) :** Il mesure si le "bruit de fond" ou l'instabilité est la même dans la bande Produit et dans la bande Témoin. 
+        * **Le choix automatique de l'algorithme :** * Si tout est au vert (Normal et Homogène), l'application utilise le test de **Student**, le plus puissant.
+            * Si les données sont instables ou asymétriques, elle bascule automatiquement sur **Welch** ou **Mann-Whitney**, qui sont des barrières de sécurité pour éviter de valider un faux résultat.
+        """)
  
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 2 — Bootstrap & IC
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_boot:
-    st.subheader(f"Intervalles de confiance Bootstrap ({n_boot:,} itérations · méthode percentile)")
+    st.markdown("""
+    <div class="vulgarisation">
+    🎲 <b>Comprendre cette page :</b> Imaginez qu'on puisse cloner votre parcelle 5 000 fois et refaire la récolte à chaque fois pour voir ce qu'il se passe. C'est exactement ce que fait le <b>Bootstrap</b> par ordinateur. Il mélange vos points réels pour mesurer la solidité du gain.
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.subheader(f"Intervalles de confiance Bootstrap ({n_boot:,} simulations)")
  
     boot_res = stat_res['bootstrap']
     ci_p, ci_t = boot_res['ci_p'], boot_res['ci_t']
  
     col_a, col_b = st.columns(2)
     with col_a:
-        st.metric("IC 95 % Produit",
-                  f"[{ci_p[0]:.2f} ; {ci_p[1]:.2f}] qtx",
-                  f"Moy. = {data_p.mean():.2f}")
+        st.metric("Rendement attendu Produit", f"[{ci_p[0]:.2f} à {ci_p[1]:.2f}] qtx", f"Moyenne = {data_p.mean():.2f}")
     with col_b:
-        st.metric("IC 95 % Témoin",
-                  f"[{ci_t[0]:.2f} ; {ci_t[1]:.2f}] qtx",
-                  f"Moy. = {data_t.mean():.2f}")
+        st.metric("Rendement attendu Témoin", f"[{ci_t[0]:.2f} à {ci_t[1]:.2f}] qtx", f"Moyenne = {data_t.mean():.2f}")
  
     ci_diff = boot_res['ci_diff']
     contains_zero = ci_diff[0] <= 0 <= ci_diff[1]
     st.metric(
-        "IC 95 % de la différence (Produit − Témoin)",
-        f"[{ci_diff[0]:.2f} ; {ci_diff[1]:.2f}] qtx",
-        "⚠️ Contient zéro → non significatif" if contains_zero else "✅ Ne contient pas zéro → significatif",
+        "VRAI GAIN NET (Intervalle de confiance de la différence)",
+        f"[{ci_diff[0]:.2f} à {ci_diff[1]:.2f}] qtx/ha",
+        "❌ Le gain peut être nul ou négatif (contient 0)" if contains_zero else "✅ Le gain est mathématiquement garanti (exclut 0)",
         delta_color="inverse" if contains_zero else "normal"
     )
  
-    # Distribution bootstrap de la différence
     fig_boot = go.Figure()
     fig_boot.add_trace(go.Histogram(
-        x=boot_res['boot_diff'],
-        nbinsx=80,
-        name="Δ bootstrap",
-        marker_color='#3498db',
-        opacity=0.7,
+        x=boot_res['boot_diff'], nbinsx=80, name="Gains simulés", marker_color='#3498db', opacity=0.7,
     ))
-    fig_boot.add_vline(x=0, line_dash="dash", line_color="red",   annotation_text="Zéro (H₀)")
-    fig_boot.add_vline(x=gain, line_dash="dot",  line_color="green", annotation_text=f"Δ observé = {gain:.2f}")
-    fig_boot.add_vrect(x0=ci_diff[0], x1=ci_diff[1], fillcolor="#3498db", opacity=0.15,
-                       annotation_text="IC 95%", annotation_position="top left")
-    fig_boot.update_layout(
-        title="Distribution bootstrap de la différence de rendement (Produit − Témoin)",
-        xaxis_title="Δ rendement (qtx/ha)", yaxis_title="Fréquence",
-        height=400
-    )
+    fig_boot.add_vline(x=0, line_dash="dash", line_color="red",   annotation_text="Zone de Danger (Gain nul)")
+    fig_boot.add_vline(x=gain, line_dash="dot",  line_color="green", annotation_text=f"Gain réel observé = {gain:.2f}")
+    fig_boot.add_vrect(x0=ci_diff[0], x1=ci_diff[1], fillcolor="#3498db", opacity=0.15, annotation_text="95% des parcelles virtuelles")
+    fig_boot.update_layout(title="Où se situe le gain après 5 000 récoltes virtuelles ?", xaxis_title="Gain de rendement (qtx/ha)", yaxis_title="Nombre de simulations", height=400)
     st.plotly_chart(fig_boot, use_container_width=True)
  
-    # Puissance statistique
-    st.subheader("Puissance statistique a posteriori")
+    st.subheader("⚡ Puissance de votre essai (Rigueur du protocole)")
     if pwr is not None:
         p1, p2, p3 = st.columns(3)
-        p1.metric("Cohen's d", f"{d_val:.3f}", stat_res['effect']['label'])
-        p2.metric("Puissance (1-β)", f"{pwr:.1%}", "Suffisant (≥ 80%)" if pwr >= 0.8 else "Insuffisant (< 80%)")
-        p3.metric("Taille d'effet", stat_res['effect']['label'])
+        p1.metric("Intensité de l'effet (Cohen's d)", f"{d_val:.2f}", stat_res['effect']['label'])
+        p2.metric("Fiabilité du test (Puissance)", f"{pwr:.1%}", "Essai Robuste (≥ 80%)" if pwr >= 0.8 else "Essai trop petit/brouillon (< 80%)")
+        p3.metric("Verdict sur la taille de l'effet", stat_res['effect']['label'].upper())
  
-        # Courbe puissance vs N
-        ns   = np.arange(5, 200, 5)
-        pwrs = [power_estimate(d_val, n, n, alpha_v) or 0 for n in ns]
-        fig_pwr = px.line(
-            x=ns, y=pwrs,
-            labels={"x": "N par groupe", "y": "Puissance statistique"},
-            title=f"Puissance théorique vs N (d = {d_val:.2f}, α = {alpha_v})"
-        )
-        fig_pwr.add_hline(y=0.8, line_dash="dash", line_color="orange", annotation_text="80 % (seuil usuel)")
-        fig_pwr.add_hline(y=0.9, line_dash="dash", line_color="green",  annotation_text="90 %")
-        fig_pwr.add_vline(x=n_p,  line_color="blue",  annotation_text=f"N actuel Produit={n_p}")
-        fig_pwr.update_yaxes(range=[0, 1.05])
-        st.plotly_chart(fig_pwr, use_container_width=True)
- 
-    with st.expander("📝 Pourquoi le bootstrap ?"):
+    with st.expander("🔍 Guide de vulgarisation : Pourquoi faire 5 000 simulations (Bootstrap) ?"):
         st.markdown("""
-Le bootstrap est **non-paramétrique** : il ne suppose aucune distribution théorique.  
-Il rééchantillonne vos données réelles 5 000 fois et mesure la variabilité empirique.  
-L'IC sur la **différence** est le test le plus direct : si l'intervalle exclut 0, l'effet est réel.  
-Avantage clé en agro : robuste aux **distributions asymétriques** fréquentes sur les rendements.
-""")
+        * **Le piège de la simple moyenne :** Si votre bande Produit fait en moyenne $+2 \text{ qtx}$ de plus que le Témoin, est-ce grâce au produit, ou est-ce juste parce que la bande était placée sur un meilleur morceau de terre ?
+        * **La réponse du Vrai Gain :** L'intervalle de confiance de la différence vous donne la fourchette de sécurité. 
+            * Si l'intervalle est de `[-0.5 à +4.5]`, la moyenne est positive, mais l'ordinateur vous dit : *"Attention, au vu du désordre dans vos points, il est possible que le vrai gain soit de 0 ou négatif"*. C'est **non significatif**.
+            * Si l'intervalle est de `[+1.1 à +3.9]`, le zéro est exclu. Vous êtes sûr à 95% que le produit apporte *au moins* $+1.1 \text{ qtx}$. C'est **gagné**.
+        * **La Puissance ($1-\beta$) :** C'est la capacité de votre essai à détecter le bonus du produit. Si votre essai est trop encombré par les mauvaises herbes ou les cailloux (bruit), la puissance s'effondre sous les 80%, signifiant que l'essai n'est pas assez propre pour conclure.
+        """)
  
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 3 — ANOVA
+# TAB 3 — ANOVA Spatial
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_anova:
+    st.markdown("""
+    <div class="vulgarisation">
+    📐 <b>Comprendre cette page :</b> Une parcelle n'est jamais uniforme (zones de cailloux, fonds de vallons fertiles). L'<b>ANOVA</b> est un découpeur de variabilité : elle sépare ce qui revient à la qualité naturelle de votre sol de ce qui revient à l'effet réel de votre produit.
+    </div>
+    """, unsafe_allow_html=True)
+
     if not run_anova:
         st.info("ANOVA désactivée. Activez-la dans les options statistiques (sidebar).")
     elif not HAS_STATSMODELS:
@@ -541,12 +538,12 @@ with tab_anova:
  
         if anova_table is None:
             st.error(f"❌ {anova_title}")
-            st.info("💡 Note : Les autres tests (Distribution, Bootstrap, Modèle mixte) restent valides et calculés sur l'ensemble de la bande.")
+            st.info("💡 Note : Les autres tests restent disponibles. L'ANOVA a été coupée pour préserver la cohérence de vos calculs.")
         else:
             st.subheader(anova_title)
             
             at = anova_table.copy()
-            at.columns = [c.replace('PR(>F)', 'p-value').replace('sum_sq', 'SCE').replace('mean_sq', 'CME') for c in at.columns]
+            at.columns = [c.replace('PR(>F)', 'p-value').replace('sum_sq', 'SCE (Part de responsabilité)').replace('mean_sq', 'CME') for c in at.columns]
             at = at.round(4)
             
             def style_pval(val):
@@ -566,37 +563,43 @@ with tab_anova:
                 r2 = anova_model.rsquared
                 r2_adj = anova_model.rsquared_adj
                 col1, col2, col3 = st.columns(3)
-                col1.metric("R² du modèle", f"{r2:.3f}")
+                col1.metric("Explication du champ (R²)", f"{r2:.1%}")
                 col2.metric("R² ajusté", f"{r2_adj:.3f}")
-                col3.metric("F global (p)", f"{anova_model.fvalue:.2f} ({anova_model.f_pvalue:.4f})")
+                col3.metric("F-Value globale", f"{anova_model.fvalue:.2f}")
  
             if has_pot and 'potentiel' in df_final.columns:
-                st.subheader("Moyennes de cellule (Traitement × Zone de potentiel)")
+                st.subheader("📊 Croisement : Rendement par Zone × Traitement")
                 pivot = df_final.groupby(['potentiel', 'grp'])['rdt'].agg(['mean', 'std', 'count']).round(2)
-                pivot.columns = ['Moy. (qtx)', 'Éc.-type', 'N']
+                pivot.columns = ['Rendement Moyen', 'Écart-Type', 'Nombre de points']
                 st.dataframe(pivot, use_container_width=True)
  
                 fig_inter = px.box(
                     df_final, x="potentiel", y="rdt", color="grp",
                     color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'},
-                    title="Rendement par zone de potentiel et traitement"
+                    title="Le produit fonctionne-t-il mieux sur certaines zones de sol ?"
                 )
                 st.plotly_chart(fig_inter, use_container_width=True)
  
-            if anova_model is not None:
-                residuals = anova_model.resid
-                fig_res = make_subplots(rows=1, cols=2, subplot_titles=["Distribution des résidus", "Q-Q plot résidus"])
-                fig_res.add_trace(go.Histogram(x=residuals, nbinsx=30, name="Résidus", marker_color='#9b59b6', opacity=0.7), row=1, col=1)
-                qq = stats.probplot(residuals)
-                fig_res.add_trace(go.Scatter(x=qq[0][0], y=qq[0][1], mode='markers', name='Obs.', marker_color='#9b59b6'), row=1, col=2)
-                fig_res.add_trace(go.Scatter(x=qq[0][0], y=qq[1][1] + qq[1][0] * np.array(qq[0][0]), mode='lines', name='Théorique', line=dict(color='red')), row=1, col=2)
-                fig_res.update_layout(height=380, title_text="Analyse des résidus du modèle ANOVA")
-                st.plotly_chart(fig_res, use_container_width=True)
+            with st.expander("🔍 Guide de vulgarisation : Comment lire le tableau d'ANOVA ?"):
+                st.markdown(f"""
+                L'ANOVA analyse trois sources de variations pour voir qui est "responsable" du rendement final :
+                1.  **C(grp) [Le Traitement] :** Si sa p-value est inférieure à {alpha_v}, le produit fonctionne de manière générale sur l'ensemble du champ.
+                2.  **C(potentiel) [Le Sol] :** Si sa p-value est très petite, cela prouve que vos zones cartographiées (ex: Faible, Moyen, Fort) décrivent bien la réalité du terrain.
+                3.  **C(grp):C(potentiel) [L'Interaction] :** C'est le graal de l'agronomie de précision. 
+                    * *Si cette p-value est sous le seuil ({alpha_v}) :* Le produit **change de comportement selon le sol**. Par exemple, il donne $+8 \text{ qtx}$ en potentiel faible mais $0 \text{ qtx}$ en potentiel fort. Vous devez adapter vos préconisations !
+                * **Le R² (R-deux) :** Si votre $R^2 = {r2:.1%}$, cela signifie que votre carte de sol et votre traitement suffisent à expliquer {r2:.1%} de tout ce qui s'est passé dans la parcelle. Le reste ({10-r2*100:.1f}%) provient d'imprévus (ravageurs, ombres de haies, etc.).
+                """)
  
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 4 — Modèle Mixte
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_mix:
+    st.markdown("""
+    <div class="vulgarisation">
+    🔀 <b>Comprendre cette page :</b> Si vous avez répété vos bandes à plusieurs endroits du champ (Bloc 1, Bloc 2, Répétition A, B...), le sol change entre ces blocs. Le <b>Modèle Mixte</b> agit comme un filtre : il nettoie la signature de fertilité propre à chaque bloc pour mesurer le pur effet biologique de votre intrant.
+    </div>
+    """, unsafe_allow_html=True)
+
     if not run_mixed:
         st.info("Modèle mixte désactivé. Activez-le dans les options statistiques (sidebar).")
     elif not HAS_STATSMODELS:
@@ -605,20 +608,19 @@ with tab_mix:
         mix_model, mix_err = run_mixed_model(df_final)
  
         if mix_model is not None:
-            st.subheader("Modèle Mixte — rdt ~ C(grp) + (1|bloc)")
-            st.caption("Traitement en effet fixe · Bloc expérimental en effet aléatoire (REML)")
+            st.subheader("Résultats épurés des effets Blocs")
  
             fe = mix_model.fe_params.round(4)
             pv = mix_model.pvalues.round(4)
             ci_mix = mix_model.conf_int().round(4)
             res_fe = pd.DataFrame({
-                'Effet fixe': fe.index,
-                'Estimé (qtx)': fe.values,
-                'IC 2.5%': ci_mix.iloc[:, 0].values,
-                'IC 97.5%': ci_mix.iloc[:, 1].values,
+                'Variable': fe.index,
+                'Efficacité pure calculée (qtx)': fe.values,
+                'Borne basse IC': ci_mix.iloc[:, 0].values,
+                'Borne haute IC': ci_mix.iloc[:, 1].values,
                 'p-value': pv.values,
             })
-            res_fe['Significatif'] = res_fe['p-value'].apply(lambda p: '✅' if p < alpha_v else '❌')
+            res_fe['Significatif ?'] = res_fe['p-value'].apply(lambda p: '✅ Oui, impact prouvé' if p < alpha_v else '❌ Non prouvé')
             st.dataframe(res_fe, use_container_width=True)
  
             re_var = mix_model.cov_re.values[0][0] if mix_model.cov_re is not None else None
@@ -626,40 +628,30 @@ with tab_mix:
             col1, col2, col3 = st.columns(3)
             if re_var is not None:
                 icc = re_var / (re_var + res_var)
-                col1.metric("Variance inter-blocs",  f"{re_var:.3f}")
-                col2.metric("Variance résiduelle",   f"{res_var:.3f}")
-                col3.metric("ICC (Intraclass Corr.)", f"{icc:.2%}",
-                            "Blocs très structurants" if icc > 0.3 else "Blocs peu structurants")
+                col1.metric("Bruit de fertilité (Inter-blocs)",  f"{re_var:.2f}")
+                col2.metric("Erreur résiduelle",   f"{res_var:.2f}")
+                col3.metric("Poids des blocs (ICC)", f"{icc:.1%}",
+                            "Répétitions indispensables" if icc > 0.2 else "Blocs homogènes, peu d'effet")
  
             try:
                 re_vals = mix_model.random_effects
                 re_df   = pd.DataFrame({'Bloc': list(re_vals.keys()),
-                                        'Effet aléatoire (qtx)': [v.values[0] for v in re_vals.values()]})
-                fig_re = px.bar(re_df, x='Bloc', y='Effet aléatoire (qtx)',
-                                title="Effets aléatoires par bloc (BLUP)",
-                                color='Effet aléatoire (qtx)', color_continuous_scale='RdYlGn')
+                                        'Hétérogénéité naturelle du bloc (qtx)': [v.values[0] for v in re_vals.values()]})
+                fig_re = px.bar(re_df, x='Bloc', y='Hétérogénéité naturelle du bloc (qtx)',
+                                title="Fertilité naturelle corrigée pour chaque bloc",
+                                color='Hétérogénéité naturelle du bloc (qtx)', color_continuous_scale='RdYlGn')
                 st.plotly_chart(fig_re, use_container_width=True)
             except Exception:
                 pass
  
+            with st.expander("🔍 Guide de vulgarisation : Effet Fixe vs Effet Aléatoire ?"):
+                st.markdown("""
+                * **L'Effet Fixe (Ce que l'on veut mesurer) :** C'est l'action biologique pure du Produit par rapport au Témoin. Le modèle extrait toutes les perturbations pour vous donner la valeur exacte du gain biologique.
+                * **L'Effet Aléatoire (Le bloc) :** On considère que chaque zone ou répétition possède sa propre déviation naturelle (un bloc en bas de pente produira toujours plus qu'un bloc sur une crête séchante). Le modèle calcule ce "poids du milieu" (BLUP) et le soustrait de l'analyse pour que la comparaison Produit/Témoin soit équitable.
+                * **L'ICC (Indicateur de structure) :** Si l'ICC est élevé (ex: $30\%$), cela signifie que $30\%$ des variations de rendement de votre champ étaient simplement dues à l'emplacement de vos blocs. Cela prouve que vous avez eu raison de mettre en place des répétitions !
+                """)
         else:
             st.error(f"❌ {mix_err}")
-            st.markdown("""
-**Quand utiliser le modèle mixte ?** Lorsque vos points de rendement sont groupés en **blocs expérimentaux** (ex: répétitions, passages de batteuse).  
-Le modèle sépare la variabilité due aux blocs de l'effet réel du traitement,  
-ce qui augmente la **puissance** de détection d'un effet même sur de petits échantillons.
-""")
- 
-        with st.expander("📝 Modèle mixte vs ANOVA classique"):
-            st.markdown("""
-| Critère | ANOVA classique | Modèle Mixte |
-|---------|----------------|--------------|
-| Prise en compte des blocs | Effet fixe (blocs doivent être équilibrés) | Effet aléatoire (robuste aux données manquantes) |
-| Inférence | Sur les niveaux observés | Peut généraliser à d'autres blocs |
-| Recommandé si | Blocs équilibrés, petit N blocs | Blocs déséquilibrés, N blocs élevé |
-| Estimateur | MCO | REML (Restricted Maximum Likelihood) |
-""")
- 
  
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 5 — Tests Multiples
@@ -667,17 +659,10 @@ ce qui augmente la **puissance** de détection d'un effet même sur de petits é
 with tab_corr:
     st.subheader("Correction pour tests multiples")
     corr_key = CORRECTION_METHODS[corr_method]
- 
     has_pot_col = 'potentiel' in df_final.columns and df_final['potentiel'].nunique() > 1
  
     if not has_pot_col:
         st.info("La correction pour tests multiples s'applique lorsque vous comparez le produit sur **plusieurs zones de potentiel** simultanément.")
-        st.markdown("""
-Ajoutez la colonne `potentiel` dans votre fichier QGIS pour activer cette analyse.  
-Sans correction, le risque d'erreur de type I (faux positif) augmente avec chaque test :  
-- 3 tests à α=5 % → risque réel ≈ 14 %  
-- 5 tests à α=5 % → risque réel ≈ 23 %
-""")
     else:
         zones = sorted(df_final['potentiel'].dropna().unique())
         p_raw_dict = {}
@@ -703,58 +688,39 @@ Sans correction, le risque d'erreur de type I (faux positif) augmente avec chaqu
                 rows.append({
                     'Zone potentiel': z,
                     'Gain (qtx)': round(gain_dict[z], 2),
-                    'p brut': round(r['p_raw'], 4),
-                    'p corrigé': round(r['p_adj'], 4),
-                    'Significatif': '✅' if r['reject'] else '❌',
+                    'p brut (sans filtre)': round(r['p_raw'], 4),
+                    'p corrigé (sécurisé)': round(r['p_adj'], 4),
+                    'Verdict Scientifique': '✅ Vrai Gain Géo-localisé' if r['reject'] else '❌ Différence due au hasard',
                 })
             df_corr = pd.DataFrame(rows)
             st.dataframe(df_corr, use_container_width=True)
  
             fig_corr = go.Figure()
             fig_corr.add_trace(go.Bar(
-                x=df_corr['Zone potentiel'], y=df_corr['p brut'],
-                name='p brut', marker_color='#3498db', opacity=0.6
+                x=df_corr['Zone potentiel'], y=df_corr['p brut (sans filtre)'], name='p-value non filtrée', marker_color='#3498db', opacity=0.6
             ))
             fig_corr.add_trace(go.Bar(
-                x=df_corr['Zone potentiel'], y=df_corr['p corrigé'],
-                name='p corrigé', marker_color='#e67e22', opacity=0.8
+                x=df_corr['Zone potentiel'], y=df_corr['p corrigé (sécurisé)'], name='p-value sécurisée (Filtre anti-hasard)', marker_color='#e67e22', opacity=0.8
             ))
-            fig_corr.add_hline(y=alpha_v, line_dash="dash", line_color="red",
-                               annotation_text=f"α = {alpha_v}")
-            fig_corr.update_layout(
-                barmode='group',
-                title=f"p-values brutes vs corrigées ({corr_method})",
-                yaxis_title="p-value",
-                height=380
-            )
+            fig_corr.add_hline(y=alpha_v, line_dash="dash", line_color="red", annotation_text=f"Seuil critique α = {alpha_v}")
+            fig_corr.update_layout(barmode='group', title="Comparaison des p-values avant/après filtrage de sécurité", yaxis_title="Niveau de risque d'erreur", height=380)
             st.plotly_chart(fig_corr, use_container_width=True)
  
             fig_forest = go.Figure()
             for i, row in df_corr.iterrows():
-                color = '#2ecc71' if row['Significatif'] == '✅' else '#e74c3c'
+                color = '#2ecc71' if 'Vrai' in row['Verdict Scientifique'] else '#e74c3c'
                 fig_forest.add_trace(go.Scatter(
-                    x=[row['Gain (qtx)']], y=[row['Zone potentiel']],
-                    mode='markers', marker=dict(size=14, color=color),
-                    name=row['Zone potentiel']
+                    x=[row['Gain (qtx)']], y=[row['Zone potentiel']], mode='markers', marker=dict(size=14, color=color), name=row['Zone potentiel']
                 ))
             fig_forest.add_vline(x=0, line_dash="dash", line_color="gray")
-            fig_forest.update_layout(
-                title="Forest plot — Gain par zone de potentiel",
-                xaxis_title="Gain (qtx/ha)",
-                showlegend=False, height=max(250, len(zones) * 60)
-            )
+            fig_forest.update_layout(title="Forest plot — Synthèse visuelle des gains nets par environnement", xaxis_title="Gain net (qtx/ha)", showlegend=False, height=max(250, len(zones) * 60))
             st.plotly_chart(fig_forest, use_container_width=True)
  
-    with st.expander("📝 Quelle correction choisir ?"):
+    with st.expander("🔍 Guide de vulgarisation : C'est quoi l'erreur des tests multiples ?"):
         st.markdown("""
-| Méthode | Contrôle | Puissance | Recommandée quand |
-|---------|----------|-----------|-------------------|
-| **Holm-Šídák** | FWER (taux d'erreur familiale) | Bonne | Comparaisons planifiées (≤ 5 zones) |
-| **Benjamini-Hochberg** | FDR (faux positifs parmi les positifs) | Meilleure | Exploration de nombreuses zones |
-| **Bonferroni** | FWER (très conservatif) | Faible | Quand chaque faux positif est coûteux |
- 
-En essais grandes bandes avec **2-4 zones de potentiel**, **Holm-Šídák est recommandé**.
-""")
+        * **Le paradoxe du loto :** Si vous jouez une fois au loto, vous avez très peu de chances de gagner. Si vous achetez 100 tickets, vos chances augmentent. En statistiques, c'est pareil : si vous cherchez un effet du produit sur 5 ou 6 zones de potentiel différentes en même temps, vous allez finir par trouver une zone "significative" **par pur hasard**, simplement parce que vous multipliez les tentatives.
+        * **À quoi servent les corrections (Holm / Bonferroni) ?** Elles font office de douane. Elles recalculent et durcissent le niveau d'exigence des p-values. Si un gain dans une zone était un "coup de chance", la p-value corrigée va remonter au-dessus du seuil d'erreur et le verdict passera en *Non significatif*. Cela évite de conseiller un produit à un agriculteur sur la base d'un faux positif.
+        """)
  
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 6 — Carte parcelle
@@ -764,9 +730,7 @@ with tab_map:
         st.info("Géométrie non disponible ou fichier vide.")
     else:
         try:
-            # 1. Copie et conversion explicite en EPSG:4326 (WGS84 - Degrés GPS)
-            gdf_plot = gdf.copy().to_crs(epsg=4326)
-            gdf_plot.columns = gdf_plot.columns.str.lower().str.strip()
+            gdf_plot = gdf.copy()
             gdf_plot['grp'] = gdf_plot['bande'].apply(lambda x: 'Produit' if x == val_p else 'Témoin')
             
             gdf_plot = gdf_plot.merge(
@@ -775,88 +739,41 @@ with tab_map:
                 suffixes=('_brut', '_nettoye')
             )
             gdf_plot['rdt_carte'] = gdf_plot['rdt_nettoye'].fillna(gdf_plot['rdt_brut'])
-
-            # --- CORRECTION ET SÉCURISATION DES AXES ---
-            # Calcul des centroïdes bruts
-            centroids = gdf_plot.geometry.centroid
-            raw_y = centroids.y.dropna().values
-            raw_x = centroids.x.dropna().values
-
-            if len(raw_y) > 0 and len(raw_x) > 0:
-                # En France, la latitude (Y) doit être plus grande que la longitude (X). 
-                # Si la moyenne de Y est plus petite que la moyenne de X, c'est qu'il y a inversion.
-                if np.abs(np.mean(raw_y)) < np.abs(np.mean(raw_x)):
-                    gdf_plot['lat'] = raw_x
-                    gdf_plot['lon'] = raw_y
-                else:
-                    gdf_plot['lat'] = raw_y
-                    gdf_plot['lon'] = raw_x
-            else:
-                st.error("❌ Impossible d'extraire les coordonnées géographiques.")
-                st.stop()
-
-            # 2. Options de sélection du mode d'affichage
-            st.markdown("### 🗺️ Options de visualisation spatiale")
+ 
+            # Extraction des coordonnées géographiques stables calculées au chargement
+            gdf_plot['lat'] = gdf_plot.geometry.centroid.y
+            gdf_plot['lon'] = gdf_plot.geometry.centroid.x
+ 
+            st.markdown("### 🗺️ Carte de Rendement Géoréférencée")
             mode_carte = st.radio(
                 "Sélectionnez le niveau de détail de la carte :",
-                ["Vue par point individuel", "Synthèse par Zone de Potentiel"],
-                horizontal=True
+                ["Vue par point individuel", "Synthèse par Zone de Potentiel"], horizontal=True
             )
-
-            # Recalcul dynamique du centre de la carte à partir des points corrigés
-            center_lat = float(gdf_plot['lat'].mean())
+ 
+            center_lat = float(gdf_plot['lat'].median())
             center_lon = float(gdf_plot['lon'].mean())
-
-            # --- CAS 1 : VUE SYNTHÈSE PAR ZONE DE POTENTIEL ---
+ 
             if mode_carte == "Synthèse par Zone de Potentiel" and 'potentiel' in gdf_plot.columns:
                 df_pot_carte = gdf_plot.groupby('potentiel').agg({
-                    'rdt_carte': 'mean',
-                    'lat': 'mean',
-                    'lon': 'mean'
+                    'rdt_carte': 'mean', 'lat': 'mean', 'lon': 'mean'
                 }).reset_index()
-                
                 df_pot_carte['rdt_moyen'] = df_pot_carte['rdt_carte'].round(1)
-
+ 
                 fig_map = px.scatter_mapbox(
-                    df_pot_carte,
-                    lat="lat",
-                    lon="lon",
-                    color="potentiel",
-                    size="rdt_moyen",
-                    size_max=20,
-                    color_discrete_sequence=px.colors.qualitative.Bold,
-                    mapbox_style="open-street-map",
-                    zoom=15,  # Zoom augmenté pour voir la parcelle de près
-                    center={"lat": center_lat, "lon": center_lon},
-                    hover_data={'potentiel': True, 'rdt_moyen': True, 'lat': False, 'lon': False},
-                    labels={'rdt_moyen': 'Rdt Moyen (qtx/ha)', 'potentiel': 'Zone de Potentiel'},
-                    title="Position et Rendement Moyen par Zone de Potentiel"
+                    df_pot_carte, lat="lat", lon="lon", color="potentiel", size="rdt_moyen", size_max=22,
+                    color_discrete_sequence=px.colors.qualitative.Bold, mapbox_style="open-street-map", zoom=16,
+                    center={"lat": center_lat, "lon": center_lon}, hover_data={'potentiel': True, 'rdt_moyen': True},
+                    labels={'rdt_moyen': 'Rdt Moyen (qtx/ha)', 'potentiel': 'Zone'}, title="Rendement Moyen par Zone de Potentiel"
                 )
-
-            # --- CAS 2 : VUE PAR POINT INDIVIDUEL (PAR DÉFAUT) ---
             else:
                 if mode_carte == "Synthèse par Zone de Potentiel":
                     st.warning("⚠️ Colonne 'potentiel' absente : affichage individuel uniquement.")
-
+ 
                 fig_map = px.scatter_mapbox(
-                    gdf_plot,
-                    lat="lat",
-                    lon="lon",
-                    color="rdt_carte",
-                    size="rdt_carte",
-                    size_max=10,
-                    color_continuous_scale="RdYlGn",
-                    mapbox_style="open-street-map",
-                    zoom=15,  # Zoom augmenté pour zoomer directement sur la parcelle
-                    center={"lat": center_lat, "lon": center_lon},
-                    opacity=0.8,
-                    hover_data={
-                        'bande': True, 
-                        'rdt_carte': ':.1f', 
-                        'potentiel': True if 'potentiel' in gdf_plot.columns else False,
-                        'lat': False, 'lon': False
-                    },
-                    labels={'rdt_carte': 'Rendement (qtx/ha)'},
+                    gdf_plot, lat="lat", lon="lon", color="rdt_carte", size="rdt_carte", size_max=12,
+                    color_continuous_scale="RdYlGn", mapbox_style="open-street-map", zoom=16,
+                    center={"lat": center_lat, "lon": center_lon}, opacity=0.8,
+                    hover_data={'bande': True, 'rdt_carte': ':.1f'}, labels={'rdt_carte': 'Rendement (qtx/ha)'},
                     title="Carte de rendement spatiale par point"
                 )
             
@@ -864,8 +781,7 @@ with tab_map:
             st.plotly_chart(fig_map, use_container_width=True)
             
         except Exception as e:
-            st.warning(f"Carte indisponible : {e}") 
-
+            st.warning(f"Carte indisponible : {e}")
  
 # ══════════════════════════════════════════════════════════════════════════════
 # 8. EXPORT RAPPORT
@@ -907,5 +823,4 @@ st.download_button(
 with st.expander("📋 Données filtrées (après nettoyage IQR)"):
     st.dataframe(df_final.reset_index(drop=True), use_container_width=True)
     csv = df_final.to_csv(index=False).encode('utf-8')
-    st.download_button("⬇️ Exporter en CSV", csv,
-                       file_name="bio_expert_donnees_filtrees.csv", mime="text/csv")
+    st.download_button("⬇️ Exporter en CSV", csv, file_name="bio_expert_donnees_filtrees.csv", mime="text/csv")
