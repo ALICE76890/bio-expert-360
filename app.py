@@ -41,8 +41,8 @@ st.set_page_config(
 st.markdown("""
 <style>
 [data-testid="stMetricValue"] { font-size: 1.6rem; font-weight: 700; }
-.verdict-sig   { background:#d4edda; border-left:4px solid #28a745; padding:12px 16px; border-radius:6px; }
-.verdict-nosig { background:#f8d7da; border-left:4px solid #dc3545; padding:12px 16px; border-radius:6px; }
+.verdict-sig   { background:#d4edda; border-left:4px solid #28a745; padding:12px 16px; border-radius:6px; color:#155724; }
+.verdict-nosig { background:#f8d7da; border-left:4px solid #dc3545; padding:12px 16px; border-radius:6px; color:#721c24; }
 .method-box    { background:#e8f4fd; border-left:4px solid #0077b6; padding:10px 14px; border-radius:6px; font-size:.9rem; }
 </style>
 """, unsafe_allow_html=True)
@@ -143,10 +143,7 @@ def power_estimate(d, n1, n2, alpha=0.05):
  
  
 def run_statistical_tests(data_p, data_t, alpha_v=0.05, n_boot=5000):
-    """
-    Batterie de tests complète.
-    Retourne un dict structuré.
-    """
+    """Batterie de tests complète. Retourne un dict structuré."""
     result = {}
     n_p, n_t = len(data_p), len(data_t)
  
@@ -202,42 +199,53 @@ def run_statistical_tests(data_p, data_t, alpha_v=0.05, n_boot=5000):
  
     return result
  
+ 
 def run_anova_analysis(df_final, alpha_v=0.05):
-    """
-    ANOVA à deux facteurs si 'potentiel' est valide et comporte plusieurs niveaux.
-    Si une seule zone de potentiel est détectée, bloque proprement le calcul.
-    """
+    """ANOVA à deux facteurs si 'potentiel' comporte plusieurs niveaux. Bloque si unique."""
     if not HAS_STATSMODELS:
         return None, "statsmodels non installé", None, False
-
-    # 1. Sécurité : vérifier si la colonne existe
+ 
     if 'potentiel' not in df_final.columns:
         return None, "Colonne 'potentiel' absente du fichier.", None, False
-
-    # 2. Compter le nombre de zones uniques de potentiel
+ 
     nb_zones = df_final['potentiel'].dropna().nunique()
-
-    # 3. CAS SPÉCIFIQUE : Une seule zone de potentiel détectée -> ON BLOQUE
+ 
     if nb_zones == 1:
         seule_zone = df_final['potentiel'].dropna().iloc[0]
         msg_erreur = f"Impossible de réaliser l'ANOVA : une seule zone de potentiel détectée ('{seule_zone}'). Pour croiser le traitement avec le milieu, il faut au moins 2 zones différentes."
         return None, msg_erreur, None, False
         
-    # 4. CAS SANS DONNÉES
     if nb_zones == 0:
         return None, "Aucune donnée de potentiel valide trouvée.", None, False
-
-    # 5. CAS NOMINAL : Au moins 2 zones de potentiel -> ANOVA à 2 facteurs
+ 
     formula = "rdt ~ C(grp) + C(potentiel) + C(grp):C(potentiel)"
     title   = "📐 ANOVA à 2 facteurs : Traitement × Zone de potentiel"
-
+ 
     try:
         model   = smf.ols(formula, data=df_final).fit()
         anova_t = sm.stats.anova_lm(model, typ=2)
         return anova_t, title, model, True
     except Exception as e:
         return None, f"Erreur lors du calcul statistique : {str(e)}", None, False 
-
+ 
+ 
+def run_mixed_model(df_final):
+    """Modèle mixte avec 'bloc' comme effet aléatoire."""
+    if not HAS_STATSMODELS:
+        return None, "statsmodels non installé ou indisponible."
+        
+    if 'bloc' not in df_final.columns:
+        return None, "Colonne 'bloc' absente du fichier QGIS. Impossible de construire le modèle mixte."
+        
+    if df_final['bloc'].dropna().nunique() < 2:
+        return None, "Données de blocs insuffisantes (< 2 blocs uniques trouvés). Le modèle mixte nécessite au moins 2 répétitions distinctes."
+ 
+    try:
+        model = smf.mixedlm("rdt ~ C(grp)", df_final, groups=df_final["bloc"]).fit(reml=True)
+        return model, None
+    except Exception as e:
+        return None, f"Erreur de convergence ou de calcul du modèle mixte : {str(e)}"
+ 
  
 def apply_correction(p_values_dict, method_key, alpha_v):
     """Correction Bonferroni / Holm / BH sur un dict de p-values."""
@@ -529,24 +537,18 @@ with tab_anova:
     elif not HAS_STATSMODELS:
         st.warning("statsmodels requis : ajoutez-le à votre fichier requirements.txt")
     else:
-        # On récupère les résultats de la fonction
         anova_table, anova_title, anova_model, has_pot = run_anova_analysis(df_final, alpha_v)
-
-        # SI LE CALCUL EST IMPOSSIBLE (Ex: 1 seule zone de potentiel)
+ 
         if anova_table is None:
-            st.error(f"❌ {anova_title}") # Affiche le message explicatif de la fonction
+            st.error(f"❌ {anova_title}")
             st.info("💡 Note : Les autres tests (Distribution, Bootstrap, Modèle mixte) restent valides et calculés sur l'ensemble de la bande.")
-        
-        # SI LE CALCUL A REUSSI
         else:
             st.subheader(anova_title)
             
-            # Format de la table ANOVA
             at = anova_table.copy()
             at.columns = [c.replace('PR(>F)', 'p-value').replace('sum_sq', 'SCE').replace('mean_sq', 'CME') for c in at.columns]
             at = at.round(4)
             
-            # Fonction de coloration
             def style_pval(val):
                 try:
                     v = float(val)
@@ -555,12 +557,11 @@ with tab_anova:
                     return ''
                 except: 
                     return ''
-
+ 
             target_cols = [c for c in at.columns if 'p-value' in c.lower() or 'PR' in c]
             styled_at = at.style.map(style_pval, subset=target_cols) if target_cols else at.style
             st.dataframe(styled_at, use_container_width=True)
-
-            # R² et résumé (Uniquement si le modèle existe !)
+ 
             if anova_model is not None:
                 r2 = anova_model.rsquared
                 r2_adj = anova_model.rsquared_adj
@@ -568,22 +569,20 @@ with tab_anova:
                 col1.metric("R² du modèle", f"{r2:.3f}")
                 col2.metric("R² ajusté", f"{r2_adj:.3f}")
                 col3.metric("F global (p)", f"{anova_model.fvalue:.2f} ({anova_model.f_pvalue:.4f})")
-
-            # Graphique et Pivot
+ 
             if has_pot and 'potentiel' in df_final.columns:
                 st.subheader("Moyennes de cellule (Traitement × Zone de potentiel)")
                 pivot = df_final.groupby(['potentiel', 'grp'])['rdt'].agg(['mean', 'std', 'count']).round(2)
                 pivot.columns = ['Moy. (qtx)', 'Éc.-type', 'N']
                 st.dataframe(pivot, use_container_width=True)
-
+ 
                 fig_inter = px.box(
                     df_final, x="potentiel", y="rdt", color="grp",
                     color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'},
                     title="Rendement par zone de potentiel et traitement"
                 )
                 st.plotly_chart(fig_inter, use_container_width=True)
-
-            # Résidus
+ 
             if anova_model is not None:
                 residuals = anova_model.resid
                 fig_res = make_subplots(rows=1, cols=2, subplot_titles=["Distribution des résidus", "Q-Q plot résidus"])
@@ -593,7 +592,7 @@ with tab_anova:
                 fig_res.add_trace(go.Scatter(x=qq[0][0], y=qq[1][1] + qq[1][0] * np.array(qq[0][0]), mode='lines', name='Théorique', line=dict(color='red')), row=1, col=2)
                 fig_res.update_layout(height=380, title_text="Analyse des résidus du modèle ANOVA")
                 st.plotly_chart(fig_res, use_container_width=True)
-
+ 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 4 — Modèle Mixte
 # ─────────────────────────────────────────────────────────────────────────────
@@ -609,7 +608,6 @@ with tab_mix:
             st.subheader("Modèle Mixte — rdt ~ C(grp) + (1|bloc)")
             st.caption("Traitement en effet fixe · Bloc expérimental en effet aléatoire (REML)")
  
-            # Paramètres fixes
             fe = mix_model.fe_params.round(4)
             pv = mix_model.pvalues.round(4)
             ci_mix = mix_model.conf_int().round(4)
@@ -623,7 +621,6 @@ with tab_mix:
             res_fe['Significatif'] = res_fe['p-value'].apply(lambda p: '✅' if p < alpha_v else '❌')
             st.dataframe(res_fe, use_container_width=True)
  
-            # Variance aléatoire
             re_var = mix_model.cov_re.values[0][0] if mix_model.cov_re is not None else None
             res_var = mix_model.scale
             col1, col2, col3 = st.columns(3)
@@ -634,7 +631,6 @@ with tab_mix:
                 col3.metric("ICC (Intraclass Corr.)", f"{icc:.2%}",
                             "Blocs très structurants" if icc > 0.3 else "Blocs peu structurants")
  
-            # Effets aléatoires estimés
             try:
                 re_vals = mix_model.random_effects
                 re_df   = pd.DataFrame({'Bloc': list(re_vals.keys()),
@@ -647,10 +643,9 @@ with tab_mix:
                 pass
  
         else:
-            st.info(f"ℹ️ {mix_err}")
+            st.error(f"❌ {mix_err}")
             st.markdown("""
-**Quand utiliser le modèle mixte ?**  
-Lorsque vos points de rendement sont groupés en **blocs expérimentaux** (ex: répétitions, passages de bateuse).  
+**Quand utiliser le modèle mixte ?** Lorsque vos points de rendement sont groupés en **blocs expérimentaux** (ex: répétitions, passages de batteuse).  
 Le modèle sépare la variabilité due aux blocs de l'effet réel du traitement,  
 ce qui augmente la **puissance** de détection d'un effet même sur de petits échantillons.
 """)
@@ -734,7 +729,6 @@ Sans correction, le risque d'erreur de type I (faux positif) augmente avec chaqu
             )
             st.plotly_chart(fig_corr, use_container_width=True)
  
-            # Forest plot des gains
             fig_forest = go.Figure()
             for i, row in df_corr.iterrows():
                 color = '#2ecc71' if row['Significatif'] == '✅' else '#e74c3c'
@@ -766,7 +760,6 @@ En essais grandes bandes avec **2-4 zones de potentiel**, **Holm-Šídák est re
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 6 — Carte parcelle
 # ─────────────────────────────────────────────────────────────────────────────
-
 with tab_map:
     if 'geometry' not in gdf.columns:
         st.info("Géométrie non disponible.")
@@ -776,36 +769,35 @@ with tab_map:
             gdf_plot.columns = gdf_plot.columns.str.lower().str.strip()
             gdf_plot['grp'] = gdf_plot['bande'].apply(lambda x: 'Produit' if x == val_p else 'Témoin')
             
-            # Fusion en spécifiant des suffixes clairs pour éviter le piège
             gdf_plot = gdf_plot.merge(
                 df_final[['rdt']].assign(idx=df_final.index),
                 left_index=True, right_on='idx', how='left',
                 suffixes=('_brut', '_nettoye')
             )
-
-            # Sécurité : Si le filtre IQR est désactivé, 'rdt_nettoye' peut contenir des NaN, 
-            # on crée une colonne propre pour Plotly
             gdf_plot['rdt_carte'] = gdf_plot['rdt_nettoye'].fillna(gdf_plot['rdt_brut'])
 
+            # Recentrage ultra-sécurisé via les limites globales de la couche géospatiale
+            bounds = gdf_plot.total_bounds
+            center_lon = (bounds[0] + bounds[2]) / 2
+            center_lat = (bounds[1] + bounds[3]) / 2
+ 
             fig_map = px.choropleth_mapbox(
                 gdf_plot, 
                 geojson=gdf_plot.__geo_interface__,
                 locations=gdf_plot.index, 
-                color='rdt_carte',  # On utilise la nouvelle colonne sécurisée
+                color='rdt_carte',
                 color_continuous_scale='RdYlGn',
-                mapbox_style="carto-positron",
-                zoom=12,
-                center={"lat": gdf_plot.geometry.centroid.y.mean(),
-                        "lon": gdf_plot.geometry.centroid.x.mean()},
+                mapbox_style="open-street-map",
+                zoom=14,
+                center={"lat": center_lat, "lon": center_lon},
                 opacity=0.75,
-                # On ajuste également les info-bulles (hover) au survol de la carte
                 hover_data={
                     'bande': True, 
                     'rdt_carte': ':.1f', 
                     'potentiel': True
                 } if 'potentiel' in gdf_plot.columns else {'bande': True, 'rdt_carte': ':.1f'},
                 labels={'rdt_carte': 'Rendement (qtx/ha)'},
-                title="Carte de rendement géoréférencée (Post-IQR)"
+                title="Carte de rendement géoréférencée"
             )
             fig_map.update_layout(height=550, margin={"r": 0, "t": 40, "l": 0, "b": 0})
             st.plotly_chart(fig_map, use_container_width=True)
@@ -850,7 +842,6 @@ st.download_button(
     mime="text/markdown"
 )
  
-# ── Données brutes filtrées ────────────────────────────────────────────────────
 with st.expander("📋 Données filtrées (après nettoyage IQR)"):
     st.dataframe(df_final.reset_index(drop=True), use_container_width=True)
     csv = df_final.to_csv(index=False).encode('utf-8')
