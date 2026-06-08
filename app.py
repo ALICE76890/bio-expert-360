@@ -202,40 +202,42 @@ def run_statistical_tests(data_p, data_t, alpha_v=0.05, n_boot=5000):
  
     return result
  
- 
 def run_anova_analysis(df_final, alpha_v=0.05):
     """
     ANOVA à deux facteurs si 'potentiel' est valide et comporte plusieurs niveaux.
-    Si une seule zone de potentiel est détectée, bloque le calcul et avertit l'utilisateur.
+    Si une seule zone de potentiel est détectée, bloque proprement le calcul.
     """
     if not HAS_STATSMODELS:
         return None, "statsmodels non installé", None, False
 
-    # 1. Vérification fine de la colonne potentiel
-    has_pot = 'potentiel' in df_final.columns and df_final['potentiel'].nunique() > 1
-    
-    # 2. Cas spécifique : la colonne existe mais n'a qu'une seule valeur unique
-    if 'potentiel' in df_final.columns and df_final['potentiel'].nunique() == 1:
-        seule_zone = df_final['potentiel'].iloc[0]
-        msg_erreur = f"Impossible de réaliser l'ANOVA à 2 facteurs : une seule zone de potentiel détectée ('{seule_zone}'). Pour croiser les facteurs, il faut au moins 2 zones différentes dans le fichier."
+    # 1. Sécurité : vérifier si la colonne existe
+    if 'potentiel' not in df_final.columns:
+        return None, "Colonne 'potentiel' absente du fichier.", None, False
+
+    # 2. Compter le nombre de zones uniques de potentiel
+    nb_zones = df_final['potentiel'].dropna().nunique()
+
+    # 3. CAS SPÉCIFIQUE : Une seule zone de potentiel détectée -> ON BLOQUE
+    if nb_zones == 1:
+        seule_zone = df_final['potentiel'].dropna().iloc[0]
+        msg_erreur = f"Impossible de réaliser l'ANOVA : une seule zone de potentiel détectée ('{seule_zone}'). Pour croiser le traitement avec le milieu, il faut au moins 2 zones différentes."
         return None, msg_erreur, None, False
+        
+    # 4. CAS SANS DONNÉES
+    if nb_zones == 0:
+        return None, "Aucune donnée de potentiel valide trouvée.", None, False
 
-    # 3. Choix de la formule selon le nombre de facteurs réels
-    if has_pot:
-        formula = "rdt ~ C(grp) + C(potentiel) + C(grp):C(potentiel)"
-        title   = "📐 ANOVA à 2 facteurs : Traitement × Zone de potentiel"
-    else:
-        formula = "rdt ~ C(grp)"
-        title   = "📐 ANOVA à 1 facteur : Traitement (Global)"
+    # 5. CAS NOMINAL : Au moins 2 zones de potentiel -> ANOVA à 2 facteurs
+    formula = "rdt ~ C(grp) + C(potentiel) + C(grp):C(potentiel)"
+    title   = "📐 ANOVA à 2 facteurs : Traitement × Zone de potentiel"
 
-    # 4. Exécution du modèle
     try:
         model   = smf.ols(formula, data=df_final).fit()
         anova_t = sm.stats.anova_lm(model, typ=2)
-        return anova_t, title, model, has_pot
+        return anova_t, title, model, True
     except Exception as e:
-        return None, f"Erreur de calcul dans le modèle : {str(e)}", None, False
- 
+        return None, f"Erreur lors du calcul statistique : {str(e)}", None, False 
+
  
 def apply_correction(p_values_dict, method_key, alpha_v):
     """Correction Bonferroni / Holm / BH sur un dict de p-values."""
@@ -518,7 +520,7 @@ L'IC sur la **différence** est le test le plus direct : si l'intervalle exclut 
 Avantage clé en agro : robuste aux **distributions asymétriques** fréquentes sur les rendements.
 """)
  
- # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # TAB 3 — ANOVA
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_anova:
@@ -527,18 +529,24 @@ with tab_anova:
     elif not HAS_STATSMODELS:
         st.warning("statsmodels requis : ajoutez-le à votre fichier requirements.txt")
     else:
-        anova_out = run_anova_analysis(df_final, alpha_v)
-        anova_table, anova_title, anova_model, has_pot = anova_out
+        # On récupère les résultats de la fonction
+        anova_table, anova_title, anova_model, has_pot = run_anova_analysis(df_final, alpha_v)
 
-        st.subheader(anova_title)
-
-        if anova_table is not None:
-            # Format de la table
+        # SI LE CALCUL EST IMPOSSIBLE (Ex: 1 seule zone de potentiel)
+        if anova_table is None:
+            st.error(f"❌ {anova_title}") # Affiche le message explicatif de la fonction
+            st.info("💡 Note : Les autres tests (Distribution, Bootstrap, Modèle mixte) restent valides et calculés sur l'ensemble de la bande.")
+        
+        # SI LE CALCUL A REUSSI
+        else:
+            st.subheader(anova_title)
+            
+            # Format de la table ANOVA
             at = anova_table.copy()
             at.columns = [c.replace('PR(>F)', 'p-value').replace('sum_sq', 'SCE').replace('mean_sq', 'CME') for c in at.columns]
             at = at.round(4)
             
-            # Fonction de coloration mise à jour avec .map()
+            # Fonction de coloration
             def style_pval(val):
                 try:
                     v = float(val)
@@ -548,24 +556,20 @@ with tab_anova:
                 except: 
                     return ''
 
-            # --- CORRECTION ICI : Remplacement de applymap par map ---
             target_cols = [c for c in at.columns if 'p-value' in c.lower() or 'PR' in c]
-            if target_cols:
-                styled_at = at.style.map(style_pval, subset=target_cols)
-            else:
-                styled_at = at.style
-
+            styled_at = at.style.map(style_pval, subset=target_cols) if target_cols else at.style
             st.dataframe(styled_at, use_container_width=True)
 
-            # R² et résumé modèle
-            r2 = anova_model.rsquared
-            r2_adj = anova_model.rsquared_adj
-            col1, col2, col3 = st.columns(3)
-            col1.metric("R² du modèle", f"{r2:.3f}")
-            col2.metric("R² ajusté", f"{r2_adj:.3f}")
-            col3.metric("F global (p)", f"{anova_model.fvalue:.2f} ({anova_model.f_pvalue:.4f})")
+            # R² et résumé (Uniquement si le modèle existe !)
+            if anova_model is not None:
+                r2 = anova_model.rsquared
+                r2_adj = anova_model.rsquared_adj
+                col1, col2, col3 = st.columns(3)
+                col1.metric("R² du modèle", f"{r2:.3f}")
+                col2.metric("R² ajusté", f"{r2_adj:.3f}")
+                col3.metric("F global (p)", f"{anova_model.fvalue:.2f} ({anova_model.f_pvalue:.4f})")
 
-            # Moyennes par groupe × potentiel
+            # Graphique et Pivot
             if has_pot and 'potentiel' in df_final.columns:
                 st.subheader("Moyennes de cellule (Traitement × Zone de potentiel)")
                 pivot = df_final.groupby(['potentiel', 'grp'])['rdt'].agg(['mean', 'std', 'count']).round(2)
@@ -575,39 +579,20 @@ with tab_anova:
                 fig_inter = px.box(
                     df_final, x="potentiel", y="rdt", color="grp",
                     color_discrete_map={'Produit': '#2ecc71', 'Témoin': '#e74c3c'},
-                    title="Rendement par zone de potentiel et traitement",
-                    labels={"potentiel": "Zone de potentiel", "rdt": "Rendement (qtx/ha)", "grp": "Groupe"}
+                    title="Rendement par zone de potentiel et traitement"
                 )
                 st.plotly_chart(fig_inter, use_container_width=True)
 
             # Résidus
             if anova_model is not None:
                 residuals = anova_model.resid
-                fig_res = make_subplots(rows=1, cols=2,
-                    subplot_titles=["Distribution des résidus", "Q-Q plot résidus"])
-                fig_res.add_trace(go.Histogram(x=residuals, nbinsx=30, name="Résidus",
-                                               marker_color='#9b59b6', opacity=0.7), row=1, col=1)
+                fig_res = make_subplots(rows=1, cols=2, subplot_titles=["Distribution des résidus", "Q-Q plot résidus"])
+                fig_res.add_trace(go.Histogram(x=residuals, nbinsx=30, name="Résidus", marker_color='#9b59b6', opacity=0.7), row=1, col=1)
                 qq = stats.probplot(residuals)
-                fig_res.add_trace(go.Scatter(x=qq[0][0], y=qq[0][1], mode='markers',
-                                             name='Obs.', marker_color='#9b59b6'), row=1, col=2)
-                fig_res.add_trace(go.Scatter(x=qq[0][0],
-                                             y=qq[1][1] + qq[1][0] * np.array(qq[0][0]),
-                                             mode='lines', name='Théorique', line=dict(color='red')), row=1, col=2)
+                fig_res.add_trace(go.Scatter(x=qq[0][0], y=qq[0][1], mode='markers', name='Obs.', marker_color='#9b59b6'), row=1, col=2)
+                fig_res.add_trace(go.Scatter(x=qq[0][0], y=qq[1][1] + qq[1][0] * np.array(qq[0][0]), mode='lines', name='Théorique', line=dict(color='red')), row=1, col=2)
                 fig_res.update_layout(height=380, title_text="Analyse des résidus du modèle ANOVA")
                 st.plotly_chart(fig_res, use_container_width=True)
-        else:
-            st.error(f"Erreur ANOVA : {anova_title}")
-
-        with st.expander("📝 Interpréter l'ANOVA en essais grande bande"):
-            st.markdown(f"""
-**Pourquoi l'ANOVA ?** Le test de Student compare deux groupes. L'ANOVA permet de tester simultanément  
-l'effet du **traitement**, de la **zone de potentiel**, et de leur **interaction**.  
- 
-L'interaction traitement × potentiel est capitale : elle révèle si le produit répond mieux  
-sur certaines zones de sol. Un p < {alpha_v} sur l'interaction impose une analyse stratifiée.  
- 
-**R² = {r2:.2%}** → le modèle explique {r2:.0%} de la variabilité totale des rendements.
-""")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 4 — Modèle Mixte
