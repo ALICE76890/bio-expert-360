@@ -159,6 +159,16 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════════════════
 # 3. MOTEUR STATISTIQUE — sélection automatique et adaptative du test
 # ══════════════════════════════════════════════════════════════════════════
+def format_pval(p):
+    """Évite l'affichage trompeur '0.0000' : une p-value n'est jamais exactement 0,
+    elle peut juste être extrêmement petite (gros échantillons, effet très net)."""
+    if p is None:
+        return "—"
+    if p < 0.0001:
+        return f"{p:.2e}"
+    return f"{p:.4f}"
+
+
 def cohen_d(a, b):
     na, nb = len(a), len(b)
     pooled = np.sqrt(((na - 1) * np.std(a, ddof=1) ** 2 + (nb - 1) * np.std(b, ddof=1) ** 2) / (na + nb - 2))
@@ -412,7 +422,7 @@ html = f"""<div class="{'verdict-sig' if sig else 'verdict-nosig'}">
 {badge_n}
 <br><br>
 <strong>{'✅ Impact Significatif' if sig else '❌ Impact Non Démontré'}</strong>
-— {stat_res['name']} · p = {stat_res['p']:.4f} · Cohen's d = {stat_res['d']:.2f} ({stat_res['label']})
+— {stat_res['name']} · p = {format_pval(stat_res['p'])} · Cohen's d = {stat_res['d']:.2f} ({stat_res['label']})
 {'<br>L\'effet n\'est probablement pas dû au hasard (confiance ≥ '+str(int((1-alpha_v)*100))+'%).' if sig else '<br>La variabilité de la parcelle empêche de conclure à un effet du produit.'}
 </div>"""
 st.markdown(html, unsafe_allow_html=True)
@@ -468,9 +478,9 @@ with tab_rdt:
     if not stat_res['small_sample']:
         d1, d2, d3 = st.columns(3)
         sp_p, sp_t, lev = stat_res['shapiro_p'], stat_res['shapiro_t'], stat_res['levene_p']
-        d1.metric("Shapiro (Produit)", f"p = {sp_p:.4f}", "✅ Normal" if sp_p > alpha_v else "⚠️ Asymétrique")
-        d2.metric("Shapiro (Témoin)", f"p = {sp_t:.4f}", "✅ Normal" if sp_t > alpha_v else "⚠️ Asymétrique")
-        d3.metric("Levene (Variances)", f"p = {lev:.4f}", "✅ Homogène" if lev > alpha_v else "⚠️ Hétérogène")
+        d1.metric("Shapiro (Produit)", f"p = {format_pval(sp_p)}", "✅ Normal" if sp_p > alpha_v else "⚠️ Asymétrique")
+        d2.metric("Shapiro (Témoin)", f"p = {format_pval(sp_t)}", "✅ Normal" if sp_t > alpha_v else "⚠️ Asymétrique")
+        d3.metric("Levene (Variances)", f"p = {format_pval(lev)}", "✅ Homogène" if lev > alpha_v else "⚠️ Hétérogène")
 
 # ─────────────────────────────────────────────────────────────────────────
 # TAB 2 — ANOVA
@@ -513,6 +523,7 @@ with tab_anova:
             except Exception:
                 styled_at = at
             st.dataframe(styled_at, use_container_width=True)
+            st.caption("ℹ️ Une valeur affichée à 0.0000 signifie p < 0.0001 (extrêmement significatif), jamais exactement zéro.")
 
             if anova_model is not None:
                 col1, col2, col3 = st.columns(3)
@@ -661,7 +672,7 @@ report_lines = [
     f"- Marge nette : {marge:.0f} €/ha",
     "",
     "## Statistiques",
-    f"- Test utilisé : {stat_res['name']}  |  p = {stat_res['p']:.4f}  |  {'Significatif' if sig else 'Non significatif'} (α = {alpha_v})",
+    f"- Test utilisé : {stat_res['name']}  |  p = {format_pval(stat_res['p'])}  |  {'Significatif' if sig else 'Non significatif'} (α = {alpha_v})",
     f"- Cohen's d : {stat_res['d']:.3f} ({stat_res['label']})",
 ]
 report_text = "\n".join(report_lines)
