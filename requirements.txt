@@ -1,8 +1,8 @@
 streamlit
 pandas
 geopandas
+pyogrio
+shapely
 plotly
 scipy
 statsmodels
-shapely
-fiona
