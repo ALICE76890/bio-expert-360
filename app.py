@@ -147,6 +147,14 @@ with st.sidebar:
         lat_input = st.number_input("Latitude", value=48.8566, format="%.4f")
         lon_input = st.number_input("Longitude", value=2.3522, format="%.4f")
 
+    with st.expander("🌡️ SEUILS DE STRESS (ajustables)", expanded=True):
+        st.caption("Réglez vous-même les seuils selon votre culture, votre région ou votre variété.")
+        t_echaudage = st.slider("Seuil chaleur — échaudage (°C)", 15, 45, 25)
+        t_critique = st.slider("Seuil chaleur — critique (°C)", t_echaudage, 50, max(t_echaudage + 5, 30))
+        t_gel = st.slider("Seuil de gel (°C)", -15, 5, -2)
+        precip_min_jour = st.slider("Pluie minimale considérée comme utile (mm/jour)", 0.0, 5.0, 0.5, step=0.1)
+        jours_secheresse = st.slider("Nb de jours secs consécutifs = séquence de sécheresse", 3, 21, 7)
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 3. MOTEUR STATISTIQUE — sélection automatique et adaptative du test
@@ -267,7 +275,7 @@ def fetch_weather(lat, lon, start, end):
     return df_w.sort_values("time").reset_index(drop=True)
 
 
-def compute_stress(df_w, params):
+def compute_stress(df_w, params, jours_secheresse=7):
     df_w = df_w.copy()
     df_w["stress_chaleur"] = df_w["temperature_2m_max"] >= params["t_echaudage"]
     df_w["stress_critique"] = df_w["temperature_2m_max"] >= params["t_critique"]
@@ -275,7 +283,7 @@ def compute_stress(df_w, params):
     df_w["jour_sec"] = df_w["precipitation_sum"] < params["precip_min_jour"]
     df_w["run_id"] = (df_w["jour_sec"] != df_w["jour_sec"].shift()).cumsum()
     run_len = df_w.groupby("run_id")["jour_sec"].transform("size")
-    df_w["stress_secheresse"] = df_w["jour_sec"] & (run_len >= 7)
+    df_w["stress_secheresse"] = df_w["jour_sec"] & (run_len >= jours_secheresse)
     return df_w
 
 
@@ -529,13 +537,19 @@ with tab_anova:
 # TAB 3 — Météo & Stress
 # ─────────────────────────────────────────────────────────────────────────
 with tab_meteo:
-    params = PARAM_CULTURES[culture]
+    params = {
+        "t_echaudage": t_echaudage,
+        "t_critique": t_critique,
+        "t_gel": t_gel,
+        "precip_min_jour": precip_min_jour,
+    }
     st.markdown(f"""
     <div class="vulgarisation">
     🌦️ Analyse météo de la période <b>semis → récolte</b> au point GPS indiqué dans la barre latérale
-    (lat {lat_input:.4f}, lon {lon_input:.4f}). Seuils calibrés pour <b>{culture}</b> :
-    chaleur ≥ {params['t_echaudage']}°C, critique ≥ {params['t_critique']}°C, gel ≤ {params['t_gel']}°C,
-    sécheresse = 7 jours consécutifs sans pluie significative.
+    (lat {lat_input:.4f}, lon {lon_input:.4f}). Seuils actuellement réglés :
+    chaleur ≥ {t_echaudage}°C, critique ≥ {t_critique}°C, gel ≤ {t_gel}°C,
+    sécheresse = {jours_secheresse} jours consécutifs sans pluie utile (&lt; {precip_min_jour} mm/j).
+    Ajustez-les dans la barre latérale (🌡️ Seuils de stress).
     </div>
     """, unsafe_allow_html=True)
 
@@ -548,7 +562,7 @@ with tab_meteo:
         if df_w is None or df_w.empty:
             st.warning("Données météo indisponibles pour cette période/localisation. Vérifiez vos coordonnées GPS.")
         else:
-            df_w = compute_stress(df_w, params)
+            df_w = compute_stress(df_w, params, jours_secheresse)
 
             nb_chaleur = int(df_w['stress_chaleur'].sum())
             nb_critique = int(df_w['stress_critique'].sum())
@@ -560,7 +574,7 @@ with tab_meteo:
             html_s = f"""<div class="{'stress-high' if stress_total else 'stress-low'}">
             <strong>{'⚠️ Stress détecté pendant le cycle' if stress_total else '✅ Aucun stress majeur détecté'}</strong>
             — {nb_chaleur} jour(s) ≥ seuil d'échaudage, {nb_critique} jour(s) de chaleur critique,
-            {nb_gel} jour(s) de gel, {nb_secheresse} jour(s) en séquence de sécheresse, sur {total_jours} jours analysés.
+            {nb_gel} jour(s) de gel, {nb_secheresse} jour(s) en séquence de sécheresse (≥ {jours_secheresse}j), sur {total_jours} jours analysés.
             </div>"""
             st.markdown(html_s, unsafe_allow_html=True)
             st.markdown("")
@@ -624,8 +638,8 @@ with tab_meteo:
             with st.expander("🔍 Comment interpréter ce graphique ?"):
                 st.markdown(f"""
                 - Courbe **rouge** = température max du jour ; courbe **bleue** = température min.
-                - Zones **rouges légères** = jours où la chaleur a dépassé le seuil critique pour le **{culture}**.
-                - Zones **orange** = séquence de sécheresse (≥ 7 jours sans pluie utile).
+                - Zones **rouges légères** = jours où la chaleur a dépassé votre seuil critique ({t_critique}°C).
+                - Zones **orange** = séquence de sécheresse (≥ {jours_secheresse} jours sans pluie utile).
                 - Ligne **verte pointillée** = date d'application produit : regardez si elle tombe juste avant
                   ou pendant une période de stress, ce qui peut influencer l'efficacité du traitement.
                 """)
