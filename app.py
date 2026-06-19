@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import geopandas as gpd
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy import stats
@@ -13,18 +12,39 @@ from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
-try:
-    import statsmodels.formula.api as smf
-    import statsmodels.api as sm
-    HAS_STATSMODELS = True
-except ImportError:
-    HAS_STATSMODELS = False
-
 # ══════════════════════════════════════════════════════════════════════════
 # 1. CONFIG PAGE & STYLE
 # ══════════════════════════════════════════════════════════════════════════
 st.set_page_config(page_title="Bio-Expert 360", layout="wide", page_icon="🌱",
                     initial_sidebar_state="expanded")
+
+# ── Imports critiques protégés : on ne veut JAMAIS un écran "Oh no" vide ──
+try:
+    import geopandas as gpd
+    HAS_GEOPANDAS = True
+    GEOPANDAS_ERROR = None
+except Exception as e:
+    HAS_GEOPANDAS = False
+    GEOPANDAS_ERROR = str(e)
+
+try:
+    import statsmodels.formula.api as smf
+    import statsmodels.api as sm
+    HAS_STATSMODELS = True
+except Exception:
+    HAS_STATSMODELS = False
+
+if not HAS_GEOPANDAS:
+    st.error(
+        "❌ Le module **geopandas** n'a pas pu être chargé, l'application ne peut pas démarrer.\n\n"
+        f"Détail technique : `{GEOPANDAS_ERROR}`\n\n"
+        "**Comment corriger (Streamlit Cloud) :**\n"
+        "1. Dans `requirements.txt`, utilisez `geopandas` + `pyogrio` (pas `fiona`).\n"
+        "2. Cliquez sur **Manage app → Reboot app** pour forcer une réinstallation complète.\n"
+        "3. Si l'erreur persiste, ajoutez un fichier `packages.txt` à la racine du repo avec :\n"
+        "```\nlibgdal-dev\ngdal-bin\nlibgeos-dev\n```"
+    )
+    st.stop()
 
 st.markdown("""
 <style>
@@ -245,7 +265,10 @@ try:
         st.error("❌ Aucun fichier .shp trouvé dans le zip (même en sous-dossier).")
         st.stop()
 
-    gdf_raw = gpd.read_file(shp_files[0])
+    try:
+        gdf_raw = gpd.read_file(shp_files[0], engine="pyogrio")
+    except Exception:
+        gdf_raw = gpd.read_file(shp_files[0])
     if gdf_raw.crs is None:
         gdf_raw.crs = "EPSG:2154"
     gdf = gdf_raw.to_crs(epsg=4326)
@@ -428,7 +451,10 @@ with tab_anova:
                     return ''
 
             target_cols = [c for c in at.columns if 'p-value' in c.lower()]
-            styled_at = at.style.map(style_pval, subset=target_cols) if target_cols else at.style
+            try:
+                styled_at = at.style.applymap(style_pval, subset=target_cols) if target_cols else at.style
+            except Exception:
+                styled_at = at
             st.dataframe(styled_at, use_container_width=True)
 
             if anova_model is not None:
