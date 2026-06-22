@@ -19,9 +19,9 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="Bio-Expert 360", layout="wide", page_icon="🌱",
                     initial_sidebar_state="expanded")
 
-# ── Imports critiques protégés : jamais un écran "Oh no" vide ─────────────
+# ── Imports critiques protégés ──────────────────────────────────────────
 try:
-    import shapefile as pyshp  # pyshp — lecture pure Python, sans GDAL
+    import shapefile as pyshp
     HAS_PYSHP = True
     PYSHP_ERROR = None
 except Exception as e:
@@ -35,12 +35,26 @@ try:
 except Exception:
     HAS_STATSMODELS = False
 
+try:
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+    HAS_SKLEARN = True
+except Exception:
+    HAS_SKLEARN = False
+
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch, cm
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    HAS_REPORTLAB = True
+except Exception:
+    HAS_REPORTLAB = False
+
 if not HAS_PYSHP:
-    st.error(
-        "❌ Le module **pyshp** n'a pas pu être chargé.\n\n"
-        f"Détail technique : `{PYSHP_ERROR}`\n\n"
-        "Ajoutez `pyshp` à votre `requirements.txt`, puis **Manage app → Reboot app**."
-    )
+    st.error(f"❌ Le module **pyshp** n'a pas pu être chargé.\n\nDétail : `{PYSHP_ERROR}`")
     st.stop()
 
 st.markdown("""
@@ -89,6 +103,7 @@ h2 { border-bottom: 3px solid #d8f3dc; padding-bottom: 6px; }
 .badge { display:inline-block; padding:3px 12px; border-radius:20px; font-size:0.78rem; font-weight:700; margin-right:6px; }
 .badge-orange { background:#ffe8cc; color:#a65c00; }
 .badge-blue { background:#d6e9f8; color:#1b4f72; }
+.badge-green { background:#d8f3dc; color:#1b4332; }
 
 hr { border-top: 1px solid #e0e4e1; }
 .stTabs [data-baseweb="tab-list"] { gap: 6px; }
@@ -118,7 +133,7 @@ PARAM_CULTURES = {
 # ══════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("## 🌱 Bio-Expert 360")
-    st.caption("Analyse statistique d'essais en bandes — v5.0")
+    st.caption("Analyse statistique d'essais en bandes — v6.0")
     st.divider()
 
     with st.expander("📥 IMPORTATION DONNÉES", expanded=True):
@@ -135,17 +150,21 @@ with st.sidebar:
         clean_iqr = st.checkbox("Nettoyage strict des outliers (IQR 1.2)", value=True)
 
     with st.expander("📊 OPTIONS STATISTIQUES", expanded=True):
-        run_anova = st.checkbox("Activer l'ANOVA spatiale (si ≥ 2 zones de potentiel)", value=True)
-        st.caption("Le test de comparaison principal est toujours choisi automatiquement.")
+        run_anova = st.checkbox("Activer l'ANOVA spatiale (si ≥ 2 zones)", value=True)
+        run_acp = st.checkbox("Activer l'ACP (Analyse en Composantes Principales)", value=True)
 
     with st.expander("💰 ÉCONOMIE", expanded=True):
         prix_vente = st.number_input("Prix de vente (€/T)", value=210)
         cout_prod = st.number_input("Coût Produit (€/ha)", value=45)
 
     with st.expander("🌦️ MÉTÉO (position de la parcelle)", expanded=True):
-        st.caption("Indiquez les coordonnées GPS approximatives de votre parcelle (clic droit sur Google Maps → copier les coordonnées).")
+        st.caption("Indiquez les coordonnées GPS approximatives de votre parcelle.")
         lat_input = st.number_input("Latitude", value=48.8566, format="%.4f")
         lon_input = st.number_input("Longitude", value=2.3522, format="%.4f")
+
+    with st.expander("💧 RÉSERVE UTILE (RU)", expanded=True):
+        st.caption("Indiquez la réserve utile moyenne de votre parcelle (en mm).")
+        reserve_utile = st.number_input("Réserve Utile (mm)", value=80, min_value=10, max_value=300, step=5)
 
     with st.expander("🌡️ SEUILS DE STRESS (ajustables)", expanded=True):
         st.caption("Réglez vous-même les seuils selon votre culture, votre région ou votre variété.")
@@ -157,11 +176,9 @@ with st.sidebar:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 3. MOTEUR STATISTIQUE — sélection automatique et adaptative du test
+# 3. MOTEUR STATISTIQUE
 # ══════════════════════════════════════════════════════════════════════════
 def format_pval(p):
-    """Évite l'affichage trompeur '0.0000' : une p-value n'est jamais exactement 0,
-    elle peut juste être extrêmement petite (gros échantillons, effet très net)."""
     if p is None:
         return "—"
     if p < 0.0001:
@@ -185,11 +202,6 @@ def interpret_d(d):
 
 
 def run_main_test(data_p, data_t, alpha_v=0.05):
-    """
-    Sélectionne automatiquement le test le plus adapté à l'échantillon :
-    - n trop petit (< 8 par groupe) : Shapiro non fiable -> Mann-Whitney directement.
-    - n suffisant : Shapiro (normalité) + Levene (homogénéité) -> Student / Welch / Mann-Whitney.
-    """
     n_p, n_t = len(data_p), len(data_t)
     small_sample = n_p < 8 or n_t < 8
     p_shap_p = p_shap_t = p_lev = None
@@ -226,12 +238,10 @@ def run_anova_analysis(df_final, alpha_v=0.05):
     if not HAS_STATSMODELS:
         return None, "statsmodels non installé.", None, False
     if 'potentiel' not in df_final.columns:
-        return None, "Colonne 'potentiel' absente du fichier : l'ANOVA spatiale nécessite des zones de sol.", None, False
+        return None, "Colonne 'potentiel' absente du fichier.", None, False
     nb_zones = df_final['potentiel'].dropna().nunique()
     if nb_zones <= 1:
-        return None, ("Une seule zone de potentiel détectée. L'ANOVA à 2 facteurs n'a de sens que pour "
-                       "croiser le traitement avec le sol — sans variation de sol elle se réduirait au "
-                       "test principal déjà calculé. Ajoutez au moins 2 zones de potentiel pour l'activer."), None, False
+        return None, "Une seule zone de potentiel détectée. ANOVA nécessite ≥ 2 zones.", None, False
 
     formula = "rdt ~ C(grp) + C(potentiel) + C(grp):C(potentiel)"
     try:
@@ -239,11 +249,59 @@ def run_anova_analysis(df_final, alpha_v=0.05):
         anova_t = sm.stats.anova_lm(model, typ=2)
         return anova_t, "📐 ANOVA à 2 facteurs : Traitement × Zone de potentiel", model, True
     except Exception as e:
-        return None, f"Erreur lors du calcul statistique : {e}", None, False
+        return None, f"Erreur ANOVA : {e}", None, False
+
+
+def run_pca_analysis(df_final, alpha_v=0.05):
+    """Analyse en Composantes Principales par groupe et potentiel"""
+    if not HAS_SKLEARN:
+        return None, "scikit-learn non installé."
+    
+    results = {}
+    
+    if 'potentiel' not in df_final.columns or df_final['potentiel'].isna().all():
+        return None, "Colonne 'potentiel' absente ou vide. ACP nécessite des zones de potentiel."
+    
+    zones = df_final['potentiel'].dropna().unique()
+    
+    for zone in zones:
+        df_zone = df_final[df_final['potentiel'] == zone]
+        
+        for grp in ['Produit', 'Témoin']:
+            df_grp = df_zone[df_zone['grp'] == grp]
+            if len(df_grp) < 3:
+                continue
+            
+            # Sélectionner colonnes numériques pertinentes
+            numeric_cols = [c for c in df_grp.columns if c not in ['bande', 'grp', 'potentiel', 'rdt']]
+            if len(numeric_cols) < 2:
+                continue
+            
+            X = df_grp[numeric_cols].dropna()
+            if X.empty or len(X) < 2:
+                continue
+            
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+            pca = PCA()
+            pca.fit(X_scaled)
+            
+            results[f"{zone}_{grp}"] = {
+                'pca': pca,
+                'data': X,
+                'zone': zone,
+                'group': grp,
+                'variance': pca.explained_variance_ratio_,
+            }
+    
+    if not results:
+        return None, "Pas assez de données numériques pour l'ACP."
+    
+    return results, "✅ ACP disponible", True
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 4. FONCTIONS MÉTÉO (Open-Meteo — gratuit, sans clé API)
+# 4. FONCTIONS MÉTÉO
 # ══════════════════════════════════════════════════════════════════════════
 @st.cache_data(show_spinner=False)
 def fetch_weather(lat, lon, start, end):
@@ -297,30 +355,202 @@ def compute_stress(df_w, params, jours_secheresse=7):
     return df_w
 
 
+def compute_reserve_utile(df_w, reserve_utile_mm):
+    """Calcule le bilan RU (réserve utile) jour par jour"""
+    df_w = df_w.copy()
+    df_w['ru'] = reserve_utile_mm
+    depletion = 0
+    ru_daily = []
+    
+    for idx, row in df_w.iterrows():
+        precip = row['precipitation_sum']
+        # Recharge simple : si pluie > 1mm, on remonte la RU
+        if precip > 1:
+            depletion = max(0, depletion - precip)
+        else:
+            # Consommation : approximation simple (mm/jour)
+            depletion += max(1, row['temperature_2m_max'] / 30) if row['temperature_2m_max'] > 10 else 0.5
+        
+        ru_current = max(0, reserve_utile_mm - depletion)
+        ru_daily.append(ru_current)
+    
+    df_w['ru_quotidienne'] = ru_daily
+    df_w['stress_ru'] = df_w['ru_quotidienne'] < (reserve_utile_mm * 0.3)  # Stress si < 30% RU
+    return df_w
+
+
 # ══════════════════════════════════════════════════════════════════════════
-# 5. LECTURE FICHIER (pyshp — sans GDAL)
+# 5. CRÉATION PDF RAPPORT
+# ══════════════════════════════════════════════════════════════════════════
+def generate_pdf_report(df_final, stat_res, sig, alpha_v, culture, val_p, 
+                        d_semis, d_appli, d_recolt, data_p, data_t, 
+                        gain, marge, prix_vente, cout_prod, n_p, n_t):
+    """Génère un rapport PDF professionnel"""
+    if not HAS_REPORTLAB:
+        return None
+    
+    pdf_filename = f"/tmp/Bio_Expert_360_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    
+    doc = SimpleDocTemplate(pdf_filename, pagesize=A4, topMargin=0.7*cm, bottomMargin=0.7*cm)
+    styles = getSampleStyleSheet()
+    story = []
+    
+    # Styles personnalisés
+    style_title = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=28,
+        textColor=colors.HexColor('#1b4332'),
+        spaceAfter=6,
+        fontName='Helvetica-Bold',
+        alignment=TA_CENTER,
+    )
+    
+    style_heading = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor=colors.HexColor('#2d6a4f'),
+        spaceAfter=10,
+        fontName='Helvetica-Bold',
+        borderBottom=1,
+        borderColor=colors.HexColor('#d8f3dc'),
+    )
+    
+    style_normal = ParagraphStyle(
+        'CustomNormal',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=colors.HexColor('#33433a'),
+        leading=14,
+    )
+    
+    # En-tête
+    story.append(Paragraph("🌱 BIO-EXPERT 360", style_title))
+    story.append(Paragraph(f"Rapport d'Analyse Statistique d'Essai en Bandes", styles['Normal']))
+    story.append(Paragraph(f"<i>Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}</i>", styles['Normal']))
+    story.append(Spacer(1, 0.3*cm))
+    
+    # Infos essai
+    story.append(Paragraph("Informations de l'Essai", style_heading))
+    
+    essai_data = [
+        ['Paramètre', 'Valeur'],
+        ['Culture', culture],
+        ['Bande Produit', val_p],
+        ['Semis', str(d_semis)],
+        ['Application', str(d_appli)],
+        ['Récolte', str(d_recolt)],
+    ]
+    
+    table_essai = Table(essai_data, colWidths=[3*cm, 5*cm])
+    table_essai.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2d6a4f')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f1f5f2')),
+        ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#d8f3dc')),
+    ]))
+    story.append(table_essai)
+    story.append(Spacer(1, 0.3*cm))
+    
+    # Résultats principaux
+    story.append(Paragraph("Résultats Principaux", style_heading))
+    
+    results_data = [
+        ['Métrique', 'Valeur', 'Interprétation'],
+        ['Observations Produit', f"{n_p}", f"n = {n_p}"],
+        ['Observations Témoin', f"{n_t}", f"n = {n_t}"],
+        ['Rendement Moyen Produit', f"{data_p.mean():.1f} qtx/ha", f"σ = {data_p.std():.2f}"],
+        ['Rendement Moyen Témoin', f"{data_t.mean():.1f} qtx/ha", f"σ = {data_t.std():.2f}"],
+        ['Gain Moyen', f"+{gain:.2f} qtx/ha", f"{(gain/(data_t.mean())*100):.1f}% de gain relatif"],
+        ['Marge Nette', f"{marge:.0f} €/ha", f"Coût prod: {cout_prod}€, Prix: {prix_vente}€/T"],
+    ]
+    
+    table_results = Table(results_data, colWidths=[3*cm, 2.5*cm, 3.5*cm])
+    table_results.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2d6a4f')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f1f5f2')),
+        ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#d8f3dc')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor('#ffffff'), colors.HexColor('#f1f5f2')]),
+    ]))
+    story.append(table_results)
+    story.append(Spacer(1, 0.3*cm))
+    
+    # Analyse statistique
+    story.append(Paragraph("Analyse Statistique", style_heading))
+    
+    verdict_text = f"""
+    <b>Test Choisi :</b> {stat_res['name']}<br/>
+    <b>Significativité :</b> {'✅ SIGNIFICATIF' if sig else '❌ NON SIGNIFICATIF'} (α = {alpha_v})<br/>
+    <b>Valeur p :</b> {format_pval(stat_res['p'])}<br/>
+    <b>Effect Size (Cohen's d) :</b> {stat_res['d']:.3f} ({stat_res['label']})<br/>
+    <br/>
+    {'L\'effet observé est statistiquement significatif : la différence n\'est probablement pas due au hasard.' if sig 
+     else 'L\'effet observé n\'est pas statistiquement significatif : la variabilité de la parcelle empêche de conclure.'}
+    """
+    
+    story.append(Paragraph(verdict_text, style_normal))
+    story.append(Spacer(1, 0.3*cm))
+    
+    # Recommandations
+    story.append(Paragraph("Recommandations", style_heading))
+    
+    if sig:
+        reco = f"✅ L'impact du produit est démontré statistiquement. Envisagez un déploiement à plus grande échelle avec un suivi agronomique."
+    else:
+        reco = f"⚠️ L'impact n'a pas pu être démontré. Vérifiez les conditions de l'essai ou répétez avec une meilleure maîtrise des hétérogénéités spatiales."
+    
+    story.append(Paragraph(reco, style_normal))
+    story.append(Spacer(1, 0.5*cm))
+    
+    # Footer
+    story.append(Paragraph("─" * 80, styles['Normal']))
+    story.append(Paragraph(f"<i>Rapport automatisé Bio-Expert 360 • Données de {datetime.now().strftime('%d/%m/%Y')}</i>", 
+                          ParagraphStyle('footer', parent=styles['Normal'], fontSize=8, alignment=TA_CENTER)))
+    
+    try:
+        doc.build(story)
+        return pdf_filename
+    except Exception as e:
+        st.error(f"Erreur génération PDF : {e}")
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 6. LECTURE FICHIER
 # ══════════════════════════════════════════════════════════════════════════
 if not uploaded_file:
     st.markdown("""
     <div class="hero">
         <h1>🌱 Bio-Expert 360</h1>
-        <p>Analysez vos essais terrain en quelques secondes — comparaison statistique, ANOVA spatiale et météo de la parcelle.</p>
+        <p>Analysez vos essais terrain en quelques secondes — comparaison statistique, ANOVA spatiale, ACP et météo.</p>
     </div>
     """, unsafe_allow_html=True)
     st.info("👈 Importez votre fichier QGIS (.zip) dans la barre latérale pour démarrer l'analyse.")
     st.markdown("""
-    **Colonnes attendues dans le fichier .shp / attributs QGIS :**
+    **Colonnes attendues dans le fichier .shp :**
 
     | Colonne | Obligatoire | Description |
     |---------|-------------|-------------|
-    | `bande` | ✅ | Identifiant de bande (ex: A, B, Produit, Témoin) |
+    | `bande` | ✅ | Identifiant de bande |
     | `rdt` | ✅ | Rendement (qtx/ha ou t/ha) |
-    | `potentiel` | ⚙️ recommandé | Zone de potentiel sol (ex: Faible, Moyen, Fort) |
+    | `potentiel` | ⚙️ recommandé | Zone de potentiel sol |
 
-    **Ce que fait l'application :**
-    - 📊 Comparaison Produit vs Témoin avec **test choisi automatiquement** selon vos données
-    - 📐 ANOVA spatiale Traitement × Zone de potentiel (si au moins 2 zones disponibles)
-    - 🌦️ Analyse météo semis → récolte avec détection de stress thermique/hydrique
+    **Nouvelles fonctionnalités v6.0 :**
+    - 📊 Comparaison Produit vs Témoin avec test adaptatif
+    - 📐 ANOVA spatiale Traitement × Zone
+    - 🎯 ACP pour analyse des variabilités intra-groupe
+    - 🌦️ Météo avec bilan de réserve utile
+    - 📄 Export PDF complet et professionnel
     """)
     st.stop()
 
@@ -338,21 +568,21 @@ try:
         st.stop()
 
     sf = pyshp.Reader(shp_files[0])
-    field_names = [f[0] for f in sf.fields[1:]]  # on ignore le champ DeletionFlag
+    field_names = [f[0] for f in sf.fields[1:]]
     records = [list(r) for r in sf.records()]
     df = pd.DataFrame(records, columns=field_names)
     df.columns = df.columns.str.lower().str.strip()
 
     missing = [c for c in ['bande', 'rdt'] if c not in df.columns]
     if missing:
-        st.error(f"❌ Colonnes manquantes : {missing}. Colonnes disponibles : {list(df.columns)}")
+        st.error(f"❌ Colonnes manquantes : {missing}.")
         st.stop()
 
     df['rdt'] = pd.to_numeric(df['rdt'].astype(str).str.replace(',', '.'), errors='coerce')
     df = df.dropna(subset=['rdt'])
 
     if df.empty:
-        st.error("❌ Aucune valeur de rendement exploitable après nettoyage de la colonne 'rdt'.")
+        st.error("❌ Aucune valeur de rendement exploitable.")
         st.stop()
 
 except Exception as e:
@@ -391,12 +621,12 @@ gain = data_p.mean() - data_t.mean() if has_enough else 0.0
 marge = ((gain / 10) * prix_vente) - cout_prod
 
 # ══════════════════════════════════════════════════════════════════════════
-# 6. EN-TÊTE & KPIs
+# 7. EN-TÊTE & KPIs
 # ══════════════════════════════════════════════════════════════════════════
 st.markdown(f"""
 <div class="hero">
     <h1>🌱 Bio-Expert 360</h1>
-    <p>Culture analysée : <b>{culture}</b> &nbsp;·&nbsp; Bande Produit : <b>{val_p}</b></p>
+    <p>Culture : <b>{culture}</b> &nbsp;·&nbsp; Bande Produit : <b>{val_p}</b> &nbsp;·&nbsp; Réserve Utile : <b>{reserve_utile} mm</b></p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -408,10 +638,10 @@ c4.metric("Moy. Témoin", f"{data_t.mean():.1f} qtx" if has_enough else "—")
 c5.metric("Gain Moyen", f"+{gain:.2f} qtx" if has_enough else "—")
 c6.metric("Marge Nette", f"{marge:.0f} €/ha" if has_enough else "—")
 if n_removed > 0:
-    st.caption(f"⚠️ {n_removed} points supprimés par nettoyage IQR sur {n_initial} observations.")
+    st.caption(f"⚠️ {n_removed} points supprimés par nettoyage IQR.")
 
 if not has_enough:
-    st.error("Données insuffisantes (< 4 obs. par groupe). Vérifiez votre fichier.")
+    st.error("Données insuffisantes (< 4 obs. par groupe).")
     st.stop()
 
 stat_res = run_main_test(data_p, data_t, alpha_v=alpha_v)
@@ -427,263 +657,3 @@ html = f"""<div class="{'verdict-sig' if sig else 'verdict-nosig'}">
 </div>"""
 st.markdown(html, unsafe_allow_html=True)
 st.markdown("")
-
-# ══════════════════════════════════════════════════════════════════════════
-# 7. ONGLETS
-# ══════════════════════════════════════════════════════════════════════════
-tab_rdt, tab_anova, tab_meteo = st.tabs([
-    "📊 Résultats & Distribution",
-    "📐 ANOVA Spatiale",
-    "🌦️ Météo & Stress",
-])
-
-# ─────────────────────────────────────────────────────────────────────────
-# TAB 1 — Distribution
-# ─────────────────────────────────────────────────────────────────────────
-with tab_rdt:
-    explication = (
-        "💡 Avec moins de 8 observations par groupe, le test de normalité (Shapiro) n'est pas fiable : "
-        "l'application bascule automatiquement vers le test de Mann-Whitney, plus robuste sur petits échantillons."
-        if stat_res['small_sample'] else
-        "💡 Le test est choisi automatiquement selon la normalité (Shapiro) et l'homogénéité des variances (Levene) "
-        "de vos données : Student si tout est conforme, Welch si les variances diffèrent, Mann-Whitney si la "
-        "distribution n'est pas normale."
-    )
-    st.markdown(f'<div class="vulgarisation">{explication}</div>', unsafe_allow_html=True)
-
-    col1, col2 = st.columns([3, 2])
-    with col1:
-        fig_box = px.box(
-            df_final, x="grp", y="rdt", color="grp", points="all", notched=True,
-            color_discrete_map={'Produit': '#2d6a4f', 'Témoin': '#c0392b'},
-            labels={"grp": "Groupe", "rdt": "Rendement (qtx/ha)"},
-            title="Distribution des rendements"
-        )
-        fig_box.update_layout(plot_bgcolor='white', paper_bgcolor='white', font_color='#33433a')
-        st.plotly_chart(fig_box, use_container_width=True)
-    with col2:
-        fig_viol = px.violin(
-            df_final, x="grp", y="rdt", color="grp", box=True,
-            color_discrete_map={'Produit': '#2d6a4f', 'Témoin': '#c0392b'},
-            labels={"grp": "Groupe", "rdt": "Rendement (qtx/ha)"},
-            title="Densité de probabilité"
-        )
-        fig_viol.update_layout(plot_bgcolor='white', paper_bgcolor='white', font_color='#33433a')
-        st.plotly_chart(fig_viol, use_container_width=True)
-
-    desc = df_final.groupby('grp')['rdt'].describe().round(2)
-    desc.columns = ['N', 'Moyenne', 'Écart-type', 'Min', 'Q25', 'Médiane', 'Q75', 'Max']
-    st.dataframe(desc, use_container_width=True)
-
-    if not stat_res['small_sample']:
-        d1, d2, d3 = st.columns(3)
-        sp_p, sp_t, lev = stat_res['shapiro_p'], stat_res['shapiro_t'], stat_res['levene_p']
-        d1.metric("Shapiro (Produit)", f"p = {format_pval(sp_p)}", "✅ Normal" if sp_p > alpha_v else "⚠️ Asymétrique")
-        d2.metric("Shapiro (Témoin)", f"p = {format_pval(sp_t)}", "✅ Normal" if sp_t > alpha_v else "⚠️ Asymétrique")
-        d3.metric("Levene (Variances)", f"p = {format_pval(lev)}", "✅ Homogène" if lev > alpha_v else "⚠️ Hétérogène")
-
-# ─────────────────────────────────────────────────────────────────────────
-# TAB 2 — ANOVA
-# ─────────────────────────────────────────────────────────────────────────
-with tab_anova:
-    st.markdown("""
-    <div class="vulgarisation">
-    📐 L'ANOVA sépare ce qui revient à la qualité du sol de ce qui revient à l'effet réel du produit,
-    et révèle si le produit fonctionne différemment selon la zone de potentiel. Elle nécessite
-    <b>au moins 2 zones de potentiel</b> distinctes pour être informative.
-    </div>
-    """, unsafe_allow_html=True)
-
-    if not run_anova:
-        st.info("ANOVA désactivée dans la barre latérale.")
-    elif not HAS_STATSMODELS:
-        st.warning("statsmodels requis : ajoutez-le à votre requirements.txt")
-    else:
-        anova_table, anova_title, anova_model, has_pot = run_anova_analysis(df_final, alpha_v)
-        if anova_table is None:
-            st.warning(f"ℹ️ {anova_title}")
-        else:
-            st.subheader(anova_title)
-            at = anova_table.copy()
-            at.columns = [c.replace('PR(>F)', 'p-value').replace('sum_sq', 'SCE').replace('mean_sq', 'CME') for c in at.columns]
-            at = at.round(4)
-
-            def style_pval(val):
-                try:
-                    v = float(val)
-                    if v < 0.001: return 'background-color:#d8f3dc; font-weight:bold; color:#1b4332;'
-                    if v < alpha_v: return 'background-color:#ffe8cc; color:#a65c00;'
-                    return ''
-                except Exception:
-                    return ''
-
-            target_cols = [c for c in at.columns if 'p-value' in c.lower()]
-            try:
-                styled_at = at.style.applymap(style_pval, subset=target_cols) if target_cols else at.style
-            except Exception:
-                styled_at = at
-            st.dataframe(styled_at, use_container_width=True)
-            st.caption("ℹ️ Une valeur affichée à 0.0000 signifie p < 0.0001 (extrêmement significatif), jamais exactement zéro.")
-
-            if anova_model is not None:
-                col1, col2, col3 = st.columns(3)
-                col1.metric("R² (variance expliquée)", f"{anova_model.rsquared:.1%}")
-                col2.metric("R² ajusté", f"{anova_model.rsquared_adj:.3f}")
-                col3.metric("F-Value globale", f"{anova_model.fvalue:.2f}")
-
-            st.subheader("📊 Rendement par Zone × Traitement")
-            pivot = df_final.groupby(['potentiel', 'grp'])['rdt'].agg(['mean', 'std', 'count']).round(2)
-            pivot.columns = ['Rendement Moyen', 'Écart-Type', 'Nombre de points']
-            st.dataframe(pivot, use_container_width=True)
-
-            fig_inter = px.box(
-                df_final, x="potentiel", y="rdt", color="grp",
-                color_discrete_map={'Produit': '#2d6a4f', 'Témoin': '#c0392b'},
-                title="Le produit fonctionne-t-il mieux sur certaines zones de sol ?"
-            )
-            fig_inter.update_layout(plot_bgcolor='white', paper_bgcolor='white', font_color='#33433a')
-            st.plotly_chart(fig_inter, use_container_width=True)
-
-# ─────────────────────────────────────────────────────────────────────────
-# TAB 3 — Météo & Stress
-# ─────────────────────────────────────────────────────────────────────────
-with tab_meteo:
-    params = {
-        "t_echaudage": t_echaudage,
-        "t_critique": t_critique,
-        "t_gel": t_gel,
-        "precip_min_jour": precip_min_jour,
-    }
-    st.markdown(f"""
-    <div class="vulgarisation">
-    🌦️ Analyse météo de la période <b>semis → récolte</b> au point GPS indiqué dans la barre latérale
-    (lat {lat_input:.4f}, lon {lon_input:.4f}). Seuils actuellement réglés :
-    chaleur ≥ {t_echaudage}°C, critique ≥ {t_critique}°C, gel ≤ {t_gel}°C,
-    sécheresse = {jours_secheresse} jours consécutifs sans pluie utile (&lt; {precip_min_jour} mm/j).
-    Ajustez-les dans la barre latérale (🌡️ Seuils de stress).
-    </div>
-    """, unsafe_allow_html=True)
-
-    if d_recolt < d_semis:
-        st.error("La date de récolte doit être postérieure à la date de semis.")
-    else:
-        with st.spinner("Récupération des données météo…"):
-            df_w = fetch_weather(lat_input, lon_input, d_semis, d_recolt)
-
-        if df_w is None or df_w.empty:
-            st.warning("Données météo indisponibles pour cette période/localisation. Vérifiez vos coordonnées GPS.")
-        else:
-            df_w = compute_stress(df_w, params, jours_secheresse)
-
-            nb_chaleur = int(df_w['stress_chaleur'].sum())
-            nb_critique = int(df_w['stress_critique'].sum())
-            nb_gel = int(df_w['stress_gel'].sum())
-            nb_secheresse = int(df_w['stress_secheresse'].sum())
-            total_jours = len(df_w)
-
-            stress_total = nb_critique > 0 or nb_secheresse > 0
-            html_s = f"""<div class="{'stress-high' if stress_total else 'stress-low'}">
-            <strong>{'⚠️ Stress détecté pendant le cycle' if stress_total else '✅ Aucun stress majeur détecté'}</strong>
-            — {nb_chaleur} jour(s) ≥ seuil d'échaudage, {nb_critique} jour(s) de chaleur critique,
-            {nb_gel} jour(s) de gel, {nb_secheresse} jour(s) en séquence de sécheresse (≥ {jours_secheresse}j), sur {total_jours} jours analysés.
-            </div>"""
-            st.markdown(html_s, unsafe_allow_html=True)
-            st.markdown("")
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("🔥 Jours chaleur (échaudage)", nb_chaleur)
-            m2.metric("🌡️ Jours chaleur critique", nb_critique)
-            m3.metric("❄️ Jours de gel", nb_gel)
-            m4.metric("🏜️ Jours en séquence sèche", nb_secheresse)
-
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=df_w['time'], y=df_w['precipitation_sum'], name="Précipitations (mm)",
-                marker_color='#3498db', opacity=0.5, yaxis='y2'
-            ))
-            fig.add_trace(go.Scatter(
-                x=df_w['time'], y=df_w['temperature_2m_max'], name="T° Max",
-                line=dict(color='#e74c3c', width=2), mode='lines'
-            ))
-            fig.add_trace(go.Scatter(
-                x=df_w['time'], y=df_w['temperature_2m_min'], name="T° Min",
-                line=dict(color='#5dade2', width=2), mode='lines', fill='tonexty', fillcolor='rgba(93,173,226,0.08)'
-            ))
-            fig.add_hline(y=params['t_echaudage'], line_dash="dash", line_color="orange",
-                          annotation_text=f"Seuil échaudage ({params['t_echaudage']}°C)")
-            fig.add_hline(y=params['t_critique'], line_dash="dash", line_color="red",
-                          annotation_text=f"Seuil critique ({params['t_critique']}°C)")
-            fig.add_hline(y=params['t_gel'], line_dash="dash", line_color="#2980b9",
-                          annotation_text=f"Seuil gel ({params['t_gel']}°C)")
-
-            for _, row in df_w[df_w['stress_critique']].iterrows():
-                fig.add_vrect(x0=row['time'] - pd.Timedelta(hours=12), x1=row['time'] + pd.Timedelta(hours=12),
-                              fillcolor="red", opacity=0.08, line_width=0)
-            for _, row in df_w[df_w['stress_secheresse']].iterrows():
-                fig.add_vrect(x0=row['time'] - pd.Timedelta(hours=12), x1=row['time'] + pd.Timedelta(hours=12),
-                              fillcolor="#d35400", opacity=0.06, line_width=0)
-
-            appli_ts = pd.Timestamp(d_appli)
-            if df_w['time'].min() <= appli_ts <= df_w['time'].max():
-                fig.add_vline(x=appli_ts, line_dash="dot", line_color="green",
-                              annotation_text="Application produit", annotation_position="top")
-
-            fig.update_layout(
-                title="Évolution météo et zones de stress pendant le cycle cultural",
-                xaxis_title="Date", yaxis_title="Température (°C)",
-                yaxis2=dict(title="Précipitations (mm)", overlaying='y', side='right', showgrid=False),
-                height=520, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                hovermode="x unified", plot_bgcolor='white', paper_bgcolor='white'
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            with st.expander("📋 Données météo journalières détaillées"):
-                show_cols = ['time', 'temperature_2m_max', 'temperature_2m_min', 'precipitation_sum',
-                             'stress_chaleur', 'stress_critique', 'stress_gel', 'stress_secheresse']
-                st.dataframe(df_w[show_cols].rename(columns={
-                    'time': 'Date', 'temperature_2m_max': 'T° Max', 'temperature_2m_min': 'T° Min',
-                    'precipitation_sum': 'Précip. (mm)', 'stress_chaleur': 'Stress chaleur',
-                    'stress_critique': 'Stress critique', 'stress_gel': 'Gel', 'stress_secheresse': 'Sécheresse'
-                }), use_container_width=True)
-
-            with st.expander("🔍 Comment interpréter ce graphique ?"):
-                st.markdown(f"""
-                - Courbe **rouge** = température max du jour ; courbe **bleue** = température min.
-                - Zones **rouges légères** = jours où la chaleur a dépassé votre seuil critique ({t_critique}°C).
-                - Zones **orange** = séquence de sécheresse (≥ {jours_secheresse} jours sans pluie utile).
-                - Ligne **verte pointillée** = date d'application produit : regardez si elle tombe juste avant
-                  ou pendant une période de stress, ce qui peut influencer l'efficacité du traitement.
-                """)
-
-# ══════════════════════════════════════════════════════════════════════════
-# 8. EXPORT RAPPORT
-# ══════════════════════════════════════════════════════════════════════════
-st.divider()
-st.subheader("📤 Export des résultats")
-
-report_lines = [
-    f"# Rapport Bio-Expert 360 — {datetime.now().strftime('%d/%m/%Y %H:%M')}",
-    f"**Culture** : {culture}  |  **Bande Produit** : {val_p}",
-    f"**Semis** : {d_semis}  |  **Application** : {d_appli}  |  **Récolte** : {d_recolt}",
-    "",
-    "## Résultats principaux",
-    f"- N Produit : {n_p}  |  N Témoin : {n_t}",
-    f"- Gain moyen : +{gain:.2f} qtx/ha",
-    f"- Marge nette : {marge:.0f} €/ha",
-    "",
-    "## Statistiques",
-    f"- Test utilisé : {stat_res['name']}  |  p = {format_pval(stat_res['p'])}  |  {'Significatif' if sig else 'Non significatif'} (α = {alpha_v})",
-    f"- Cohen's d : {stat_res['d']:.3f} ({stat_res['label']})",
-]
-report_text = "\n".join(report_lines)
-st.download_button(
-    "⬇️ Télécharger le rapport (.md)",
-    report_text.encode("utf-8"),
-    file_name=f"bio_expert_360_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-    mime="text/markdown"
-)
-
-with st.expander("📋 Données filtrées (après nettoyage IQR)"):
-    st.dataframe(df_final.reset_index(drop=True), use_container_width=True)
-    csv = df_final.to_csv(index=False).encode('utf-8')
-    st.download_button("⬇️ Exporter en CSV", csv, file_name="bio_expert_donnees_filtrees.csv", mime="text/csv")
