@@ -393,12 +393,25 @@ marge = ((gain / 10) * prix_vente) - cout_prod
 # ══════════════════════════════════════════════════════════════════════════
 # 6. EN-TÊTE & KPIs
 # ══════════════════════════════════════════════════════════════════════════
-st.markdown(f"""
-<div class="hero">
-    <h1>🌱 NATUP Grande Bande</h1>
-    <p>Culture analysée : <b>{culture}</b> &nbsp;·&nbsp; Bande Produit : <b>{val_p}</b></p>
-</div>
-""", unsafe_allow_html=True)
+# 1. On crée deux colonnes pour aligner le logo et le titre sur la même ligne
+col_logo, col_titre = st.columns([1, 5])
+
+with col_logo:
+    # REMPLACEZ l'URL ci-dessous par le lien direct de votre logo officiel
+    url_logo = "https://votre-site-hebergeur.com/logo-natup.png"
+    st.image(url_logo, width=120)
+
+with col_titre:
+    # 2. On affiche le reste de l'en-tête à droite du logo
+    st.markdown(f"""
+    <div class="hero" style="padding: 18px 32px; margin-bottom: 0px;">
+        <h1>🌱 NATUP Grande Bande</h1>
+        <p>Culture analysée : <b>{culture}</b> &nbsp;·&nbsp; Bande Produit : <b>{val_p}</b></p>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Un petit espace propre avant d'attaquer les chiffres
+st.markdown("<br>", unsafe_allow_html=True)
 
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Obs. Produit", f"{n_p}")
