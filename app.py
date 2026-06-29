@@ -393,13 +393,12 @@ marge = ((gain / 10) * prix_vente) - cout_prod
 # ══════════════════════════════════════════════════════════════════════════
 # 6. EN-TÊTE & KPIs
 # ══════════════════════════════════════════════════════════════════════════
-# 1. On crée deux colonnes pour aligner le logo et le titre sur la même ligne
+# 1. On crée deux colonnes pour aligner le logo et le titre
 col_logo, col_titre = st.columns([1, 5])
 
 with col_logo:
-    # REMPLACEZ l'URL ci-dessous par le lien direct de votre logo officiel
-    url_logo = "https://votre-site-hebergeur.com/logo-natup.png"
-    st.image(url_logo, width=120)
+    # Vu que le logo est à la racine sur GitHub, on met juste le nom du fichier
+    st.image("logo.png", width=120)
 
 with col_titre:
     # 2. On affiche le reste de l'en-tête à droite du logo
