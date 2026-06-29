@@ -393,24 +393,24 @@ marge = ((gain / 10) * prix_vente) - cout_prod
 # ══════════════════════════════════════════════════════════════════════════
 # 6. EN-TÊTE & KPIs
 # ══════════════════════════════════════════════════════════════════════════
-# 1. On crée deux colonnes pour aligner le logo et le titre
-col_logo, col_titre = st.columns([1, 5])
+# ══════════════════════════════════════════════════════════════════════════
+# 6. EN-TÊTE & KPIs
+# ══════════════════════════════════════════════════════════════════════════
 
-with col_logo:
-    # Vu que le logo est à la racine sur GitHub, on met juste le nom du fichier
-    st.image("logo.png", width=120)
+# Mettez l'URL brute de votre logo GitHub ici (Clic droit sur GitHub -> Copier l'adresse de l'image)
+# Si vous n'avez pas encore l'URL, vous pouvez utiliser ce code HTML qui intègre le logo directement dans le coin droit
+URL_LOGO = "https://raw.githubusercontent.com/ALICE76890/NATUP-GRANDE-BANDE/main/logo.png"
 
-with col_titre:
-    # 2. On affiche le reste de l'en-tête à droite du logo
-    st.markdown(f"""
-    <div class="hero" style="padding: 18px 32px; margin-bottom: 0px;">
+st.markdown(f"""
+<div class="hero" style="position: relative; overflow: hidden; padding: 28px 32px; margin-bottom: 22px;">
+    <img src="{URL_LOGO}" style="float: right; height: 60px; max-width: 150px; object-fit: contain; margin-left: 20px; border-radius: 4px;" onerror="this.style.display='none'">
+    <div style="float: left;">
         <h1>🌱 NATUP Grande Bande</h1>
         <p>Culture analysée : <b>{culture}</b> &nbsp;·&nbsp; Bande Produit : <b>{val_p}</b></p>
     </div>
-    """, unsafe_allow_html=True)
-
-# Un petit espace propre avant d'attaquer les chiffres
-st.markdown("<br>", unsafe_allow_html=True)
+    <div style="clear: both;"></div>
+</div>
+""", unsafe_allow_html=True)
 
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Obs. Produit", f"{n_p}")
